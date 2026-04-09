@@ -1078,19 +1078,16 @@ async function runSemanticSearch(query) {
         render();
         return;
     }
-    if (DEPLOY_MODE) {
-        semanticResultIds = null;
-        render();
-        const bar = document.getElementById("stats-bar");
-        if (bar) bar.innerHTML = `<span class="stat-item">Semantic search requires the local server — using keyword filter</span>`;
-        return;
-    }
     semanticLoading = true;
     semanticQuery = query;
     updateSemanticUI();
     render();
     try {
-        const resp = await fetch(`/api/search?q=${encodeURIComponent(query)}&k=50`);
+        // In deploy mode, use serverless FTS; locally, use the Python API
+        const endpoint = DEPLOY_MODE
+            ? `/api/search?q=${encodeURIComponent(query)}&k=50&mode=semantic`
+            : `/api/search?q=${encodeURIComponent(query)}&k=50`;
+        const resp = await fetch(endpoint);
         if (!resp.ok) throw new Error(`Search API returned ${resp.status}`);
         const data = await resp.json();
         semanticResultIds = data.results.map(r => r.id);
@@ -1098,7 +1095,7 @@ async function runSemanticSearch(query) {
         console.error("Semantic search error:", err);
         semanticResultIds = null;
         const bar = document.getElementById("stats-bar");
-        if (bar) bar.innerHTML = `<span class="stat-item" style="color:var(--danger,#c00)">Semantic search unavailable — run server.py</span>`;
+        if (bar) bar.innerHTML = `<span class="stat-item" style="color:var(--danger,#c00)">Search unavailable</span>`;
     }
     semanticLoading = false;
     updateSemanticUI();
@@ -1111,18 +1108,15 @@ async function runFtsSearch(query) {
         render();
         return;
     }
-    if (DEPLOY_MODE) {
-        ftsResultIds = null;
-        render();
-        const bar = document.getElementById("stats-bar");
-        if (bar) bar.innerHTML = `<span class="stat-item">Full-text search requires the local server — using keyword filter</span>`;
-        return;
-    }
     semanticLoading = true;
     updateSemanticUI();
     render();
     try {
-        const resp = await fetch(`/api/fts?q=${encodeURIComponent(query)}&k=100`);
+        // In deploy mode, use serverless FTS; locally, use the Python API
+        const endpoint = DEPLOY_MODE
+            ? `/api/search?q=${encodeURIComponent(query)}&k=100&mode=fts`
+            : `/api/fts?q=${encodeURIComponent(query)}&k=100`;
+        const resp = await fetch(endpoint);
         if (!resp.ok) throw new Error(`FTS API returned ${resp.status}`);
         const data = await resp.json();
         ftsResultIds = data.results.map(r => r.id);
