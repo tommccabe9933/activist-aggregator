@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="origin">
+    <title>Activist Aggregator</title>
+    <link rel="stylesheet" href="style.css?v=17">
+</head>
+<body>
+    <header class="site-header">
+        <div class="header-inner">
+            <div class="header-copy">
+                <h1>Activist Aggregator</h1>
+                <p class="subtitle">Campaign and short intelligence from public filings, reports, presentations, and announcement feeds.</p>
+            </div>
+            <div class="header-actions">
+                <div class="header-stats" id="header-stats"></div>
+                <button id="reading-list-toggle" class="header-btn" title="Reading List (r)" aria-label="Open reading list">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M3 2h10a1 1 0 011 1v11l-6-3-6 3V3a1 1 0 011-1z"/>
+                    </svg>
+                    <span>Reading List</span>
+                    <span class="rl-badge" id="rl-badge" style="display:none">0</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="shell">
+        <div class="tab-bar">
+            <button id="tab-presentations" class="tab-btn active" data-tab="presentations">
+                <span class="tab-label">Presentations</span>
+                <span class="tab-count" id="tab-count-presentations"></span>
+            </button>
+            <button id="tab-announcements" class="tab-btn" data-tab="announcements">
+                <span class="tab-label">Announcements</span>
+                <span class="tab-count" id="tab-count-announcements"></span>
+            </button>
+            <button id="tab-filings" class="tab-btn" data-tab="filings">
+                <span class="tab-label">Filings</span>
+                <span class="tab-count" id="tab-count-filings"></span>
+            </button>
+            <button id="tab-all" class="tab-btn" data-tab="all">
+                <span class="tab-label">All</span>
+                <span class="tab-count" id="tab-count-all"></span>
+            </button>
+            <button id="tab-shorts" class="tab-btn" data-tab="shorts">
+                <span class="tab-label">Shorts</span>
+                <span class="tab-count" id="tab-count-shorts"></span>
+            </button>
+            <button id="tab-guide" class="tab-btn" data-tab="guide">
+                <span class="tab-label">Guide</span>
+            </button>
+        </div>
+
+        <section class="control-panel">
+            <div class="toolbar toolbar-primary">
+                <div class="search-wrap">
+                    <input type="text" id="search-input" placeholder="Search activist, target, title, or filing...">
+                    <button id="semantic-toggle" class="search-mode-btn" type="button" title="Toggle semantic search (press Enter to search)">Semantic</button>
+                </div>
+                <div class="toolbar-actions">
+                    <select id="sort-select">
+                        <option value="date-desc">Newest First</option>
+                        <option value="date-asc">Oldest First</option>
+                        <option value="activist" id="sort-by-party">By Activist</option>
+                    </select>
+                    <div class="view-group shorts-subtabs" id="shorts-subtabs" aria-label="Shorts mode" style="display:none">
+                        <button id="shorts-reports" class="view-btn shorts-view-btn active" type="button">Reports</button>
+                        <button id="shorts-signals" class="view-btn shorts-view-btn" type="button">Signals</button>
+                    </div>
+                    <div class="view-group signal-tier-tabs" id="signal-tier-tabs" aria-label="Signal tier" style="display:none">
+                        <button class="view-btn signal-tier-btn active" data-tier="high" type="button">High</button>
+                        <button class="view-btn signal-tier-btn" data-tier="medium" type="button">Medium</button>
+                        <button class="view-btn signal-tier-btn" data-tier="all" type="button">All</button>
+                    </div>
+                    <div class="view-group" aria-label="View mode">
+                        <button id="view-list" class="view-btn active">List</button>
+                        <button id="view-campaigns" class="view-btn">Campaigns</button>
+                    </div>
+                    <button id="toggle-filters" class="toolbar-btn" type="button" aria-expanded="false">Filters</button>
+                </div>
+            </div>
+
+            <div class="toolbar toolbar-secondary collapsed" id="filter-panel">
+                <div class="filter-group">
+                    <select id="activist-filter">
+                        <option value="">All Activists</option>
+                    </select>
+                    <select id="source-filter">
+                        <option value="">All Sources</option>
+                    </select>
+                    <select id="type-filter">
+                        <option value="">All Types</option>
+                        <option value="activist_campaign_demand">Campaign Demand</option>
+                        <option value="activist_stake_disclosure">Stake Disclosure</option>
+                        <option value="activist_public_letter">Public Letter</option>
+                        <option value="activist_press_release">Press Release</option>
+                        <option value="company_board_change">Board Change</option>
+                        <option value="company_settlement">Settlement</option>
+                        <option value="company_strategic_review">Strategic Review</option>
+                    </select>
+                    <select id="sector-filter">
+                        <option value="">All Sectors</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <div class="stats-bar" id="stats-bar"></div>
+        <div class="list-container" id="list-container"></div>
+    </main>
+
+    <aside class="reading-list-sidebar" id="reading-list-sidebar" aria-label="Reading list">
+        <div class="rl-header">
+            <div>
+                <p class="eyebrow">Working Tray</p>
+                <h2>Reading List</h2>
+            </div>
+            <button id="rl-close" class="rl-close-btn" title="Close" aria-label="Close reading list">&times;</button>
+        </div>
+        <div class="rl-body" id="rl-body">
+            <div class="rl-empty">No documents saved yet.</div>
+        </div>
+        <div class="rl-footer" id="rl-footer" style="display:none">
+            <div class="rl-footer-copy">
+                <strong>Export</strong>
+                <span>Download PDFs and link manifests, or email yourself a clean digest.</span>
+            </div>
+            <div class="rl-export-row">
+                <button id="rl-email-btn" class="rl-action-btn">Email</button>
+                <button id="rl-download-btn" class="rl-action-btn rl-action-primary">Download ZIP</button>
+            </div>
+            <div class="rl-email-form" id="rl-email-form" style="display:none">
+                <input type="email" id="rl-email-input" placeholder="you@example.com">
+                <button id="rl-email-send" class="rl-action-btn rl-action-primary">Send</button>
+            </div>
+            <button id="rl-clear-btn" class="rl-clear-btn">Clear reading list</button>
+        </div>
+    </aside>
+    <div class="rl-overlay" id="rl-overlay"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="app.js?v=17"></script>
+</body>
+</html>
