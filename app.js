@@ -1160,13 +1160,16 @@ function updateStats(filtered) {
             `<span class="stat-item"><strong>${filtered.filter(d => d.render_status === "rendered_pdf").length}</strong> rendered PDFs</span>`,
         ]
         : [];
-    bar.innerHTML = [
+    const statItems = [
         `<span class="stat-item"><strong>${filtered.length}</strong> results</span>`,
         `<span class="stat-item"><strong>${uniqueActivists}</strong> ${statLabel}</span>`,
         `<span class="stat-item"><strong>${uniqueTargets}</strong> targets</span>`,
-        `<span class="stat-item"><strong>${pdfCount}</strong> local PDFs</span>`,
-        ...extraShortsStats,
-    ].join("");
+    ];
+    if (!DEPLOY_MODE && pdfCount > 0) {
+        statItems.push(`<span class="stat-item"><strong>${pdfCount}</strong> local PDFs</span>`);
+    }
+    statItems.push(...extraShortsStats);
+    bar.innerHTML = statItems.join("");
 
     const activistCount = new Set(getActivistRecords().map(d => d.activist).filter(Boolean)).size;
     const shortPublisherCount = new Set(allData.filter(isShortRecord).map(getShortPublisher).filter(Boolean)).size;

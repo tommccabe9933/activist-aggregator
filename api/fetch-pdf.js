@@ -22,6 +22,8 @@ const ALLOWED_HOSTS = new Set([
   "www.10xebitda.com",
   "hedgefundalpha.com",
   "www.hedgefundalpha.com",
+  "pleaseactaccordingly.com",
+  "www.pleaseactaccordingly.com",
 ]);
 
 function isAllowedHost(hostname) {
