@@ -968,6 +968,7 @@ function updateSectorFilter() {
 function updateTypeFilter() {
     const typeSelect = document.getElementById("type-filter");
     const currentVal = typeSelect.value;
+    typeSelect.options[0].textContent = activeTab === "filings" ? "All Filing Types" : "All Types";
     while (typeSelect.options.length > 1) typeSelect.remove(1);
 
     if (activeTab === "announcements") {
@@ -982,6 +983,18 @@ function updateTypeFilter() {
             const opt = document.createElement("option");
             opt.value = type;
             opt.textContent = `${TRACKER_EVENT_LABELS[type] || type} (${trackerTypeCounts[type]})`;
+            typeSelect.appendChild(opt);
+        });
+    } else if (activeTab === "filings") {
+        const formTypeCounts = {};
+        getActivistRecords().forEach(d => {
+            const formType = d.form_type || "Unknown";
+            formTypeCounts[formType] = (formTypeCounts[formType] || 0) + 1;
+        });
+        Object.keys(formTypeCounts).sort().forEach(formType => {
+            const opt = document.createElement("option");
+            opt.value = formType;
+            opt.textContent = `${formType} (${formTypeCounts[formType]})`;
             typeSelect.appendChild(opt);
         });
     } else {
@@ -1301,7 +1314,13 @@ function getFiltered() {
         if (activeTab !== "shorts") {
             if (activist && d.activist !== activist) return false;
             if (source && d.source !== source) return false;
-            if (type && d.announcement_type !== type) return false;
+            if (type) {
+                if (activeTab === "filings") {
+                    if ((d.form_type || "Unknown") !== type) return false;
+                } else if (d.announcement_type !== type) {
+                    return false;
+                }
+            }
             if (activeTab === "filings" && filingScope === "activist-firms" && !isActivistFirmRecord(d)) return false;
             if (sector) {
                 const docSector = d.sector || "Unknown";
