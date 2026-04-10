@@ -426,7 +426,7 @@ select {
 }
 
 .list-header.tracker-grid {
-    grid-template-columns: 12rem minmax(0, 1fr) 10rem 8rem 8rem 3rem;
+    grid-template-columns: 12rem minmax(0, 1fr) 10rem 8rem 8rem 3rem 3rem;
 }
 
 .col-right {
@@ -462,7 +462,7 @@ select {
 }
 
 .tracker-group-header {
-    grid-template-columns: 12rem minmax(0, 1fr) 10rem 8rem 8rem 3rem;
+    grid-template-columns: 12rem minmax(0, 1fr) 10rem 8rem 8rem 3rem 3rem;
 }
 
 .list-row:hover,
@@ -602,7 +602,14 @@ select {
     justify-content: end;
     align-items: center;
     gap: 0.45rem;
-    min-width: 5.75rem;
+    min-width: 4.25rem;
+}
+
+.campaign-action-placeholder {
+    width: 1.8rem;
+    height: 1.8rem;
+    display: inline-flex;
+    flex-shrink: 0;
 }
 
 .row-action-btn,

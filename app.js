@@ -2365,6 +2365,19 @@ function buildTrackerTimeline(campaign) {
     `;
 }
 
+function getCampaignRowSaveId(campaign) {
+    const latestEvent = findCampaignEvent(campaign, campaign.latest_material_event_id);
+    const candidateArtifacts = [
+        ...((latestEvent && latestEvent.artifacts) || []),
+        ...((latestEvent && latestEvent.coverage_artifacts) || []),
+        ...(campaign.coverage_artifacts || []),
+        ...(campaign.low_trust_artifacts || []),
+        ...((campaign.events || []).flatMap(event => event.artifacts || [])),
+    ];
+    const artifact = candidateArtifacts.find(Boolean);
+    return artifact ? trackerArtifactReadingListId(campaign, artifact) : "";
+}
+
 function buildTrackerHeader() {
     return `
         <div class="list-header tracker-grid">
@@ -2373,6 +2386,7 @@ function buildTrackerHeader() {
             <span class="col-right">Latest Event</span>
             <span class="col-right">Updated</span>
             <span class="col-right">Status</span>
+            <span class="col-right">Save</span>
             <span class="col-right">Open</span>
         </div>
     `;
@@ -2398,6 +2412,7 @@ function renderTracker() {
     container.innerHTML = buildTrackerHeader() + campaigns.map(campaign => {
         const isOpen = expandedCampaigns.has(campaign.campaign_id);
         const latestEventLabel = TRACKER_EVENT_LABELS[campaign.latest_material_event_type] || campaign.latest_material_event_type || "Campaign Update";
+        const saveId = getCampaignRowSaveId(campaign);
         const summaryLine = [
             `${campaign.primary_artifact_count || 0} primary`,
             `${campaign.coverage_count || 0} related`,
@@ -2421,6 +2436,7 @@ function renderTracker() {
                     <span class="campaign-range">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
                     <span class="campaign-count">${trackerStatusChip(campaign.campaign_status)}</span>
                     <span class="campaign-actions">
+                        ${saveId ? renderSaveButton(saveId) : '<span class="campaign-action-placeholder" aria-hidden="true"></span>'}
                         <span class="campaign-toggle" aria-hidden="true">${isOpen ? "−" : "+"}</span>
                     </span>
                 </div>
