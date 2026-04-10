@@ -63,6 +63,14 @@ const TRACKER_EVIDENCE_LABELS = {
     news: "News",
 };
 
+const FILER_ROLE_LABELS = {
+    "activist-firm": "Activist Firms",
+    "individual-activist": "Individual Activists",
+    "issuer-company": "Issuer / Company",
+    "deal-party": "Deal Party / Acquirer",
+    "institutional-other": "Institutional / Other",
+};
+
 const KNOWN_ACTIVIST_FIRM_PATTERNS = [
     "elliott",
     "trian",
@@ -759,6 +767,46 @@ function normalizeFilerText(value) {
         .trim();
 }
 
+function tokenizeEntityName(value) {
+    return normalizeFilerText(value)
+        .split(" ")
+        .filter(token => token && ![
+            "the",
+            "and",
+            "of",
+            "corp",
+            "corporation",
+            "company",
+            "co",
+            "inc",
+            "plc",
+            "llc",
+            "lp",
+            "ltd",
+            "limited",
+            "sa",
+            "holdings",
+            "holding",
+            "group",
+        ].includes(token));
+}
+
+function looksLikeIndividualActivistName(name) {
+    return /^[a-z]+ [a-z]+(?: [a-z])?$/.test(name);
+}
+
+function namesLikelySameEntity(left, right) {
+    const leftTokens = tokenizeEntityName(left);
+    const rightTokens = tokenizeEntityName(right);
+    if (!leftTokens.length || !rightTokens.length) return false;
+    const leftJoined = leftTokens.join(" ");
+    const rightJoined = rightTokens.join(" ");
+    if (leftJoined === rightJoined) return true;
+    const overlap = leftTokens.filter(token => rightTokens.includes(token));
+    const minLen = Math.min(leftTokens.length, rightTokens.length);
+    return overlap.length >= Math.min(2, minLen) && overlap.length / minLen >= 0.67;
+}
+
 function isActivistFirmRecord(d) {
     const name = normalizeFilerText(d.activist || "");
     if (!name) return false;
@@ -769,8 +817,44 @@ function isActivistFirmRecord(d) {
     const looksIssuerLike = ISSUER_LIKE_KEYWORDS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name));
     const hasFundLegalForm = /\b(lp|llc|ltd|limited)\b/.test(name);
     const hasPrivateVehicleForm = PRIVATE_VEHICLE_FORMS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name));
-    const looksLikePerson = /^[a-z]+ [a-z]+(?: [a-z])?$/.test(name);
+    const looksLikePerson = looksLikeIndividualActivistName(name);
     return !looksIssuerLike && (keywordHits >= 2 || (keywordHits >= 1 && hasFundLegalForm) || hasPrivateVehicleForm || looksLikePerson);
+}
+
+function getFilerRole(d) {
+    const name = normalizeFilerText(d.activist || "");
+    const target = normalizeFilerText(d.target_company || "");
+    if (!name) return "institutional-other";
+    if (isActivistFirmRecord(d)) {
+        return looksLikeIndividualActivistName(name) ? "individual-activist" : "activist-firm";
+    }
+    if (namesLikelySameEntity(name, target)) return "issuer-company";
+    if (NON_ACTIVIST_FILER_PATTERNS.some(pattern => name.includes(pattern))) return "institutional-other";
+    if (ISSUER_LIKE_KEYWORDS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name)) || PRIVATE_VEHICLE_FORMS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name))) {
+        return "deal-party";
+    }
+    return looksLikeIndividualActivistName(name) ? "individual-activist" : "institutional-other";
+}
+
+function getRecencyCutoff(option) {
+    if (!option) return null;
+    const now = new Date();
+    const cutoff = new Date(now);
+    if (option === "7d") cutoff.setDate(cutoff.getDate() - 7);
+    else if (option === "30d") cutoff.setDate(cutoff.getDate() - 30);
+    else if (option === "90d") cutoff.setDate(cutoff.getDate() - 90);
+    else if (option === "ytd") return new Date(now.getFullYear(), 0, 1);
+    else return null;
+    return cutoff;
+}
+
+function passesRecency(dateStr, option) {
+    const cutoff = getRecencyCutoff(option);
+    if (!cutoff) return true;
+    if (!dateStr) return false;
+    const parsed = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return false;
+    return parsed >= cutoff;
 }
 
 async function fetchJsonFile(suffix) {
@@ -806,6 +890,7 @@ async function ensureTrackerData(background = false) {
                 updateSectorFilter();
                 updateTypeFilter();
                 updateSourceFilter();
+                updateCampaignStatusFilter();
                 render();
             }
             return trackerData;
@@ -904,6 +989,8 @@ function populateFilters() {
     updateSectorFilter();
     updateTypeFilter();
     updateSourceFilter();
+    updateFilerRoleFilter();
+    updateCampaignStatusFilter();
     performance.mark("filters-end");
     performance.measure("populate-filters", "filters-start", "filters-end");
     console.debug(`[perf] populate-filters: ${performance.getEntriesByName("populate-filters").pop().duration.toFixed(0)}ms`);
@@ -1012,6 +1099,56 @@ function updateTypeFilter() {
     }
 }
 
+function updateFilerRoleFilter() {
+    const roleSelect = document.getElementById("filer-role-filter");
+    const currentVal = roleSelect.value;
+    while (roleSelect.options.length > 1) roleSelect.remove(1);
+    if (activeTab === "filings") {
+        const roleCounts = {};
+        getActivistRecords()
+            .filter(d => d.content_type === "filing")
+            .forEach(d => {
+                const role = getFilerRole(d);
+                roleCounts[role] = (roleCounts[role] || 0) + 1;
+            });
+        Object.keys(FILER_ROLE_LABELS).forEach(role => {
+            if (!roleCounts[role]) return;
+            const opt = document.createElement("option");
+            opt.value = role;
+            opt.textContent = `${FILER_ROLE_LABELS[role]} (${roleCounts[role]})`;
+            roleSelect.appendChild(opt);
+        });
+    }
+    if (currentVal) {
+        roleSelect.value = currentVal;
+        if (roleSelect.value !== currentVal) roleSelect.value = "";
+    }
+}
+
+function updateCampaignStatusFilter() {
+    const statusSelect = document.getElementById("campaign-status-filter");
+    const currentVal = statusSelect.value;
+    while (statusSelect.options.length > 1) statusSelect.remove(1);
+    if (activeTab === "announcements") {
+        const statusCounts = {};
+        (trackerData.campaigns || []).forEach(campaign => {
+            const status = campaign.campaign_status || "provisional";
+            statusCounts[status] = (statusCounts[status] || 0) + 1;
+        });
+        Object.keys(TRACKER_STATUS_LABELS).forEach(status => {
+            if (!statusCounts[status]) return;
+            const opt = document.createElement("option");
+            opt.value = status;
+            opt.textContent = `${TRACKER_STATUS_LABELS[status] || status} (${statusCounts[status]})`;
+            statusSelect.appendChild(opt);
+        });
+    }
+    if (currentVal) {
+        statusSelect.value = currentVal;
+        if (statusSelect.value !== currentVal) statusSelect.value = "";
+    }
+}
+
 function updateSourceFilter() {
     if (activeTab === "guide") return;
     const sourceSelect = document.getElementById("source-filter");
@@ -1102,6 +1239,9 @@ function syncToolbarState() {
     const searchInput = document.getElementById("search-input");
     const sortByParty = document.getElementById("sort-by-party");
     const filingScope = document.getElementById("filing-scope-filter");
+    const filerRole = document.getElementById("filer-role-filter");
+    const campaignStatus = document.getElementById("campaign-status-filter");
+    const recency = document.getElementById("recency-filter");
     const semanticToggle = document.getElementById("semantic-toggle");
 
     const signalTabs = document.getElementById("signal-tier-tabs");
@@ -1111,6 +1251,9 @@ function syncToolbarState() {
     viewGroup.style.display = shortsMode || trackerMode ? "none" : "inline-flex";
     filtersButton.style.display = shortsMode ? "none" : "inline-flex";
     filingScope.style.display = activeTab === "filings" ? "" : "none";
+    filerRole.style.display = activeTab === "filings" ? "" : "none";
+    campaignStatus.style.display = trackerMode ? "" : "none";
+    recency.style.display = activeTab === "guide" ? "none" : "";
     if (semanticToggle) semanticToggle.style.display = trackerMode ? "none" : "";
     sortByParty.textContent = shortsMode ? "By Publisher" : "By Activist";
     if (semanticMode) {
@@ -1163,6 +1306,9 @@ function readUrlState() {
     if (params.get("type")) document.getElementById("type-filter").value = params.get("type");
     if (params.get("sector")) document.getElementById("sector-filter").value = params.get("sector");
     if (params.get("filing_scope")) document.getElementById("filing-scope-filter").value = params.get("filing_scope");
+    if (params.get("filer_role")) document.getElementById("filer-role-filter").value = params.get("filer_role");
+    if (params.get("campaign_status")) document.getElementById("campaign-status-filter").value = params.get("campaign_status");
+    if (params.get("recency")) document.getElementById("recency-filter").value = params.get("recency");
     if (params.get("q")) document.getElementById("search-input").value = params.get("q");
     if (params.get("sort")) document.getElementById("sort-select").value = params.get("sort");
 
@@ -1189,6 +1335,8 @@ function readUrlState() {
     updateSectorFilter();
     updateTypeFilter();
     updateSourceFilter();
+    updateFilerRoleFilter();
+    updateCampaignStatusFilter();
     syncToolbarState();
 }
 
@@ -1199,6 +1347,9 @@ function writeUrlState() {
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
     const filingScope = document.getElementById("filing-scope-filter").value;
+    const filerRole = document.getElementById("filer-role-filter").value;
+    const campaignStatus = document.getElementById("campaign-status-filter").value;
+    const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.trim();
     const sort = document.getElementById("sort-select").value;
 
@@ -1210,7 +1361,10 @@ function writeUrlState() {
         if (type) params.set("type", type);
         if (sector) params.set("sector", sector);
         if (activeTab === "filings" && filingScope !== "all") params.set("filing_scope", filingScope);
+        if (activeTab === "filings" && filerRole) params.set("filer_role", filerRole);
+        if (activeTab === "announcements" && campaignStatus) params.set("campaign_status", campaignStatus);
     }
+    if (activeTab !== "guide" && recency) params.set("recency", recency);
     if (search) params.set("q", search);
     if (sort !== "date-desc") params.set("sort", sort);
     if (activeTab !== "shorts" && activeTab !== "guide" && activeTab !== "announcements" && viewMode !== TAB_DEFAULT_VIEW[activeTab]) {
@@ -1249,6 +1403,8 @@ function setActiveTab(tab, doRender = true) {
     updateSectorFilter();
     updateTypeFilter();
     updateSourceFilter();
+    updateFilerRoleFilter();
+    updateCampaignStatusFilter();
     if (tab === "shorts") {
         urlPinnedView = false;
         activeShortsTab = "reports";
@@ -1289,6 +1445,8 @@ function getFiltered() {
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
     const filingScope = document.getElementById("filing-scope-filter").value;
+    const filerRole = document.getElementById("filer-role-filter").value;
+    const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.toLowerCase();
     const sort = document.getElementById("sort-select").value;
 
@@ -1322,11 +1480,13 @@ function getFiltered() {
                 }
             }
             if (activeTab === "filings" && filingScope === "activist-firms" && !isActivistFirmRecord(d)) return false;
+            if (activeTab === "filings" && filerRole && getFilerRole(d) !== filerRole) return false;
             if (sector) {
                 const docSector = d.sector || "Unknown";
                 if (docSector !== sector) return false;
             }
         }
+        if (!passesRecency(d.date, recency)) return false;
         if (SIGNAL_TIER_TABS.has(activeTab) && activeSignalTier !== "all") {
             if ((d.signal_tier || "low") !== activeSignalTier) return false;
             if (activeTab === "filings" && activeSignalTier === "high" && !isActivistFirmRecord(d)) return false;
@@ -1378,11 +1538,15 @@ function getFilteredTrackerCampaigns() {
     const source = document.getElementById("source-filter").value;
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
+    const campaignStatus = document.getElementById("campaign-status-filter").value;
+    const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.toLowerCase();
     const sort = document.getElementById("sort-select").value;
 
     const filtered = (trackerData.campaigns || []).filter(campaign => {
         if (activist && campaign.canonical_activist !== activist) return false;
+        if (campaignStatus && campaign.campaign_status !== campaignStatus) return false;
+        if (!passesRecency(campaign.last_updated_at, recency)) return false;
         if (sector) {
             const campaignSector = campaign.sector || "Unknown";
             if (campaignSector !== sector) return false;
@@ -2456,6 +2620,9 @@ document.getElementById("source-filter").addEventListener("change", render);
 document.getElementById("type-filter").addEventListener("change", render);
 document.getElementById("sector-filter").addEventListener("change", render);
 document.getElementById("filing-scope-filter").addEventListener("change", render);
+document.getElementById("filer-role-filter").addEventListener("change", render);
+document.getElementById("campaign-status-filter").addEventListener("change", render);
+document.getElementById("recency-filter").addEventListener("change", render);
 document.getElementById("search-input").addEventListener("input", () => {
     if (activeTab === "announcements") {
         render();
