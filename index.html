@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="origin">
     <title>Activist Aggregator</title>
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
     <header class="site-header">
         <div class="header-inner">
             <div class="header-copy">
                 <h1>Activist Aggregator</h1>
-                <p class="subtitle">Campaign and short intelligence from public filings, reports, presentations, and announcement feeds.</p>
+                <p class="subtitle">Campaign and short intelligence from public filings, reports, presentations, and a campaign-level tracker.</p>
             </div>
             <div class="header-actions">
                 <div class="header-stats" id="header-stats"></div>
@@ -34,7 +34,7 @@
                 <span class="tab-count" id="tab-count-presentations"></span>
             </button>
             <button id="tab-announcements" class="tab-btn" data-tab="announcements">
-                <span class="tab-label">Announcements</span>
+                <span class="tab-label">Campaign Tracker</span>
                 <span class="tab-count" id="tab-count-announcements"></span>
             </button>
             <button id="tab-filings" class="tab-btn" data-tab="filings">
@@ -104,6 +104,10 @@
                     <select id="sector-filter">
                         <option value="">All Sectors</option>
                     </select>
+                    <select id="filing-scope-filter" style="display:none">
+                        <option value="all">All Filers</option>
+                        <option value="activist-firms">Activist Firms Only</option>
+                    </select>
                 </div>
             </div>
         </section>
@@ -142,6 +146,6 @@
     <div class="rl-overlay" id="rl-overlay"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="app.js?v=17"></script>
+    <script src="app.js?v=18"></script>
 </body>
 </html>

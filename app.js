@@ -33,6 +33,88 @@ const TYPE_LABELS = {
     company_strategic_review: "Review",
 };
 
+const TRACKER_EVENT_LABELS = {
+    stake_disclosure: "Stake Disclosure",
+    activist_letter: "Activist Letter",
+    activist_deck: "Activist Deck",
+    proxy_filing: "Proxy Filing",
+    board_nomination: "Board Nomination",
+    company_response: "Company Response",
+    settlement: "Settlement",
+    strategic_review_response: "Strategic Review",
+    vote_result: "Vote Result",
+    activist_press_release: "Press Release",
+    campaign_demand: "Campaign Demand",
+    campaign_update: "Campaign Update",
+};
+
+const TRACKER_STATUS_LABELS = {
+    active: "Active",
+    resolved: "Resolved",
+    dormant: "Dormant",
+    provisional: "Provisional",
+};
+
+const TRACKER_EVIDENCE_LABELS = {
+    primary_filing: "Primary Filing",
+    primary_fund: "Primary Fund",
+    company_release: "Company Release",
+    wire: "Wire",
+    news: "News",
+};
+
+const KNOWN_ACTIVIST_FIRM_PATTERNS = [
+    "elliott",
+    "trian",
+    "pershing square",
+    "starboard",
+    "third point",
+    "icahn",
+    "jana",
+    "valueact",
+    "saba capital",
+    "engaged capital",
+    "driver management",
+    "coliseum capital",
+    "raging capital",
+    "baker bros",
+    "orbimed",
+    "discovery group",
+    "land buildings",
+    "mantle ridge",
+    "sachem head",
+    "hg vora",
+    "legion partners",
+    "ancora",
+    "sandell",
+    "alta fox",
+    "bulldog investors",
+    "owl creek",
+    "kimmeridge",
+    "inclusive capital",
+    "bluebell",
+    "oasis management",
+    "barington",
+    "soros fund management",
+];
+
+const NON_ACTIVIST_FILER_PATTERNS = [
+    "bank of america",
+    "blackrock",
+    "vanguard",
+    "state street",
+    "fmr",
+    "wells fargo",
+    "morgan stanley",
+    "ubs",
+    "goldman sachs",
+    "deutsche bank",
+    "jpmorgan",
+    "norges bank",
+    "capital group",
+    "invesco",
+];
+
 const TAB_CONTENT_TYPES = {
     guide: "guide",
     all: null,
@@ -75,7 +157,7 @@ const TAB_DEFAULT_VIEW = {
     guide: "guide",
     all: "list",
     presentations: "list",
-    announcements: "list",
+    announcements: "campaigns",
     filings: "campaigns",
     shorts: "list",
 };
@@ -92,6 +174,9 @@ const TAB_DEFAULT_SIGNAL = {
 };
 
 let allData = [];
+let trackerData = { campaigns: [], counts: {} };
+let trackerLoaded = false;
+let trackerLoadPromise = null;
 let activeTab = "presentations";
 let activeShortsTab = "reports";
 let activeSignalTier = TAB_DEFAULT_SIGNAL[activeTab];
@@ -620,6 +705,25 @@ function buildAssetPath(suffix) {
     return `../data/${suffix}`;
 }
 
+function normalizeFilerText(value) {
+    return (value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function isActivistFirmRecord(d) {
+    const name = normalizeFilerText(d.activist || "");
+    if (!name) return false;
+    if (d.source === "sec_edgar") return true;
+    if (KNOWN_ACTIVIST_FIRM_PATTERNS.some(pattern => name.includes(pattern))) return true;
+    if (NON_ACTIVIST_FILER_PATTERNS.some(pattern => name.includes(pattern))) return false;
+    const hasFirmStructure = /\b(capital|management|partners|partner|advisors|advisor|investments|investment|fund|funds)\b/.test(name);
+    const looksInstitutional = /\b(bank|corp|corporation|insurance|trust|holdings?)\b/.test(name);
+    return hasFirmStructure && !looksInstitutional;
+}
+
 async function fetchJsonFile(suffix) {
     const candidatePaths = [
         buildAssetPath(suffix),
@@ -637,6 +741,35 @@ async function fetchJsonFile(suffix) {
         }
     }
     return null;
+}
+
+async function ensureTrackerData(background = false) {
+    if (trackerLoaded) return trackerData;
+    if (!trackerLoadPromise) {
+        trackerLoadPromise = (async () => {
+            const fetchedTrackerData = await fetchJsonFile("campaign_tracker.json");
+            trackerData = fetchedTrackerData || { campaigns: [], counts: {} };
+            trackerLoaded = true;
+            trackerLoadPromise = null;
+            updateTabCounts();
+            if (activeTab === "announcements") {
+                updateActivistFilter();
+                updateSectorFilter();
+                updateTypeFilter();
+                updateSourceFilter();
+                render();
+            }
+            return trackerData;
+        })().catch(err => {
+            trackerLoadPromise = null;
+            throw err;
+        });
+    }
+    if (background) {
+        trackerLoadPromise.catch(() => {});
+        return trackerLoadPromise;
+    }
+    return trackerLoadPromise;
 }
 
 function inferContentType(d) {
@@ -705,6 +838,7 @@ async function loadData() {
         readUrlState();
         render();
         ReadingList.updateUI();
+        window.setTimeout(() => ensureTrackerData(true), 0);
     } catch (e) {
         container.innerHTML = `
             <div class="empty-state">
@@ -717,56 +851,103 @@ async function loadData() {
 
 function populateFilters() {
     performance.mark("filters-start");
-    const activistSelect = document.getElementById("activist-filter");
-    const sectorSelect = document.getElementById("sector-filter");
-
-    if (deployMeta?.filters) {
-        // Use precomputed filter data from meta.json
-        deployMeta.filters.activists.forEach(a => {
-            const opt = document.createElement("option");
-            opt.value = a;
-            opt.textContent = a;
-            activistSelect.appendChild(opt);
-        });
-        Object.entries(deployMeta.filters.sectors).forEach(([s, count]) => {
-            const opt = document.createElement("option");
-            opt.value = s;
-            opt.textContent = `${s} (${count})`;
-            sectorSelect.appendChild(opt);
-        });
-    } else {
-        // Compute from data
-        const activistRecords = getActivistRecords();
-        const activists = [...new Set(
-            activistRecords
-                .filter(d => d.source !== "google_news")
-                .map(d => d.activist)
-                .filter(Boolean)
-        )].sort();
-        activists.forEach(a => {
-            const opt = document.createElement("option");
-            opt.value = a;
-            opt.textContent = a;
-            activistSelect.appendChild(opt);
-        });
-
-        const sectors = {};
-        activistRecords.forEach(d => {
-            const sector = d.sector || "Unknown";
-            sectors[sector] = (sectors[sector] || 0) + 1;
-        });
-        Object.keys(sectors).sort().forEach(s => {
-            const opt = document.createElement("option");
-            opt.value = s;
-            opt.textContent = `${s} (${sectors[s]})`;
-            sectorSelect.appendChild(opt);
-        });
-    }
-
+    updateActivistFilter();
+    updateSectorFilter();
+    updateTypeFilter();
     updateSourceFilter();
     performance.mark("filters-end");
     performance.measure("populate-filters", "filters-start", "filters-end");
     console.debug(`[perf] populate-filters: ${performance.getEntriesByName("populate-filters").pop().duration.toFixed(0)}ms`);
+}
+
+function updateActivistFilter() {
+    const activistSelect = document.getElementById("activist-filter");
+    const currentVal = activistSelect.value;
+    while (activistSelect.options.length > 1) activistSelect.remove(1);
+
+    const activists = activeTab === "announcements"
+        ? [...new Set((trackerData.campaigns || []).map(c => c.canonical_activist).filter(Boolean))].sort()
+        : [...new Set(
+            getActivistRecords()
+                .filter(d => d.source !== "google_news")
+                .map(d => d.activist)
+                .filter(Boolean)
+        )].sort();
+
+    activists.forEach(a => {
+        const opt = document.createElement("option");
+        opt.value = a;
+        opt.textContent = a;
+        activistSelect.appendChild(opt);
+    });
+    if (currentVal) {
+        activistSelect.value = currentVal;
+        if (activistSelect.value !== currentVal) activistSelect.value = "";
+    }
+}
+
+function updateSectorFilter() {
+    const sectorSelect = document.getElementById("sector-filter");
+    const currentVal = sectorSelect.value;
+    while (sectorSelect.options.length > 1) sectorSelect.remove(1);
+
+    const sectors = {};
+    if (activeTab === "announcements") {
+        (trackerData.campaigns || []).forEach(c => {
+            const sector = c.sector || "Unknown";
+            sectors[sector] = (sectors[sector] || 0) + 1;
+        });
+    } else {
+        getActivistRecords().forEach(d => {
+            const sector = d.sector || "Unknown";
+            sectors[sector] = (sectors[sector] || 0) + 1;
+        });
+    }
+
+    Object.keys(sectors).sort().forEach(s => {
+        const opt = document.createElement("option");
+        opt.value = s;
+        opt.textContent = `${s} (${sectors[s]})`;
+        sectorSelect.appendChild(opt);
+    });
+    if (currentVal) {
+        sectorSelect.value = currentVal;
+        if (sectorSelect.value !== currentVal) sectorSelect.value = "";
+    }
+}
+
+function updateTypeFilter() {
+    const typeSelect = document.getElementById("type-filter");
+    const currentVal = typeSelect.value;
+    while (typeSelect.options.length > 1) typeSelect.remove(1);
+
+    if (activeTab === "announcements") {
+        const trackerTypeCounts = {};
+        (trackerData.campaigns || []).forEach(c => {
+            (c.events || []).forEach(event => {
+                if (!event.is_material_node) return;
+                trackerTypeCounts[event.event_type] = (trackerTypeCounts[event.event_type] || 0) + 1;
+            });
+        });
+        Object.keys(trackerTypeCounts).sort().forEach(type => {
+            const opt = document.createElement("option");
+            opt.value = type;
+            opt.textContent = `${TRACKER_EVENT_LABELS[type] || type} (${trackerTypeCounts[type]})`;
+            typeSelect.appendChild(opt);
+        });
+    } else {
+        Object.entries(TYPE_LABELS).forEach(([value, label]) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = label;
+            typeSelect.appendChild(opt);
+        });
+    }
+
+    if (currentVal) {
+        typeSelect.value = currentVal;
+        if (typeSelect.value !== currentVal) typeSelect.value = "";
+    }
 }
 
 function updateSourceFilter() {
@@ -779,17 +960,34 @@ function updateSourceFilter() {
     const contentType = TAB_CONTENT_TYPES[activeTab];
     const sourceCounts = {};
 
-    allData.forEach(d => {
-        const isShort = isShortRecord(d);
-        if (activeTab === "shorts") {
-            if (!isShort) return;
-        } else if (isShort) {
-            return;
-        }
-        if (contentType !== null && d.content_type !== contentType) return;
-        const s = d.source || "other";
-        sourceCounts[s] = (sourceCounts[s] || 0) + 1;
-    });
+    if (activeTab === "announcements") {
+        (trackerData.campaigns || []).forEach(campaign => {
+            const nestedArtifacts = [
+                ...(campaign.coverage_artifacts || []),
+                ...(campaign.low_trust_artifacts || []),
+                ...((campaign.events || []).flatMap(event => [
+                    ...(event.artifacts || []),
+                    ...(event.coverage_artifacts || []),
+                ])),
+            ];
+            nestedArtifacts.forEach(artifact => {
+                const source = artifact.source_name || "other";
+                sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+            });
+        });
+    } else {
+        allData.forEach(d => {
+            const isShort = isShortRecord(d);
+            if (activeTab === "shorts") {
+                if (!isShort) return;
+            } else if (isShort) {
+                return;
+            }
+            if (contentType !== null && d.content_type !== contentType) return;
+            const s = d.source || "other";
+            sourceCounts[s] = (sourceCounts[s] || 0) + 1;
+        });
+    }
 
     [...new Set([...relevantSources, ...Object.keys(sourceCounts)])].forEach(s => {
         if (!sourceCounts[s]) return;
@@ -818,7 +1016,9 @@ function updateTabCounts() {
     });
     document.getElementById("tab-count-all").textContent = (counts.presentations + counts.announcements + counts.filings).toLocaleString();
     document.getElementById("tab-count-presentations").textContent = counts.presentations.toLocaleString();
-    document.getElementById("tab-count-announcements").textContent = counts.announcements.toLocaleString();
+    document.getElementById("tab-count-announcements").textContent = trackerLoaded
+        ? (trackerData.campaigns || []).length.toLocaleString()
+        : counts.announcements.toLocaleString();
     document.getElementById("tab-count-filings").textContent = counts.filings.toLocaleString();
     document.getElementById("tab-count-shorts").textContent = counts.shorts.toLocaleString();
 }
@@ -837,24 +1037,28 @@ function syncToolbarState() {
     const shortsTabs = document.getElementById("shorts-subtabs");
     const viewGroup = document.querySelector(".view-group[aria-label='View mode']");
     const filtersButton = document.getElementById("toggle-filters");
-    const filterPanel = document.getElementById("filter-panel");
     const searchInput = document.getElementById("search-input");
     const sortByParty = document.getElementById("sort-by-party");
+    const filingScope = document.getElementById("filing-scope-filter");
+    const semanticToggle = document.getElementById("semantic-toggle");
 
     const signalTabs = document.getElementById("signal-tier-tabs");
     const shortsMode = activeTab === "shorts";
+    const trackerMode = activeTab === "announcements";
     shortsTabs.style.display = shortsMode ? "inline-flex" : "none";
-    viewGroup.style.display = shortsMode ? "none" : "inline-flex";
+    viewGroup.style.display = shortsMode || trackerMode ? "none" : "inline-flex";
     filtersButton.style.display = shortsMode ? "none" : "inline-flex";
+    filingScope.style.display = activeTab === "filings" ? "" : "none";
+    if (semanticToggle) semanticToggle.style.display = trackerMode ? "none" : "";
     sortByParty.textContent = shortsMode ? "By Publisher" : "By Activist";
     if (semanticMode) {
         searchInput.placeholder = shortsMode
             ? "e.g. short squeeze thesis on pharma — Enter to search"
-            : "e.g. board seat fight at a retailer — Enter to search";
+            : (trackerMode ? "e.g. company response to activist campaign — Enter to search" : "e.g. board seat fight at a retailer — Enter to search");
     } else {
         searchInput.placeholder = shortsMode
             ? "Hindenburg, Viceroy, ticker, target..."
-            : "Elliott, proxy fight, DFAN14A, Starbucks...";
+            : (trackerMode ? "Search activist, target, latest event, or coverage..." : "Elliott, proxy fight, DFAN14A, Starbucks...");
     }
     if (shortsMode) toggleFilterPanel(false);
     if (activeTab === "guide") {
@@ -863,7 +1067,7 @@ function syncToolbarState() {
         filtersButton.style.display = "none";
     }
     if (signalTabs) {
-        const showSignal = SIGNAL_TIER_TABS.has(activeTab);
+        const showSignal = SIGNAL_TIER_TABS.has(activeTab) && !trackerMode;
         signalTabs.style.display = showSignal ? "inline-flex" : "none";
         if (showSignal) syncSignalTierButtons();
     }
@@ -896,6 +1100,7 @@ function readUrlState() {
     if (params.get("source")) document.getElementById("source-filter").value = params.get("source");
     if (params.get("type")) document.getElementById("type-filter").value = params.get("type");
     if (params.get("sector")) document.getElementById("sector-filter").value = params.get("sector");
+    if (params.get("filing_scope")) document.getElementById("filing-scope-filter").value = params.get("filing_scope");
     if (params.get("q")) document.getElementById("search-input").value = params.get("q");
     if (params.get("sort")) document.getElementById("sort-select").value = params.get("sort");
 
@@ -904,6 +1109,9 @@ function readUrlState() {
     if (activeTab === "shorts" || activeTab === "guide") {
         urlPinnedView = false;
         viewMode = TAB_DEFAULT_VIEW[activeTab];
+    } else if (activeTab === "announcements") {
+        urlPinnedView = false;
+        viewMode = "campaigns";
     } else {
         viewMode = (requestedView === "campaigns" || requestedView === "list")
             ? requestedView
@@ -915,6 +1123,9 @@ function readUrlState() {
     });
     setViewButtons(viewMode);
     setShortsViewButtons(activeShortsTab);
+    updateActivistFilter();
+    updateSectorFilter();
+    updateTypeFilter();
     updateSourceFilter();
     syncToolbarState();
 }
@@ -925,6 +1136,7 @@ function writeUrlState() {
     const source = document.getElementById("source-filter").value;
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
+    const filingScope = document.getElementById("filing-scope-filter").value;
     const search = document.getElementById("search-input").value.trim();
     const sort = document.getElementById("sort-select").value;
 
@@ -935,10 +1147,11 @@ function writeUrlState() {
         if (source) params.set("source", source);
         if (type) params.set("type", type);
         if (sector) params.set("sector", sector);
+        if (activeTab === "filings" && filingScope !== "all") params.set("filing_scope", filingScope);
     }
     if (search) params.set("q", search);
     if (sort !== "date-desc") params.set("sort", sort);
-    if (activeTab !== "shorts" && activeTab !== "guide" && viewMode !== TAB_DEFAULT_VIEW[activeTab]) {
+    if (activeTab !== "shorts" && activeTab !== "guide" && activeTab !== "announcements" && viewMode !== TAB_DEFAULT_VIEW[activeTab]) {
         params.set("view", viewMode);
     }
     if (SIGNAL_TIER_TABS.has(activeTab) && activeSignalTier !== TAB_DEFAULT_SIGNAL[activeTab]) {
@@ -950,7 +1163,7 @@ function writeUrlState() {
 }
 
 function setViewMode(mode, persistPinnedView = false) {
-    if (activeTab === "guide" || activeTab === "shorts") return;
+    if (activeTab === "guide" || activeTab === "shorts" || activeTab === "announcements") return;
     viewMode = mode;
     if (persistPinnedView) urlPinnedView = true;
     setViewButtons(mode);
@@ -970,12 +1183,19 @@ function setActiveTab(tab, doRender = true) {
     });
     expandedId = null;
     expandedCampaigns.clear();
+    updateActivistFilter();
+    updateSectorFilter();
+    updateTypeFilter();
     updateSourceFilter();
     if (tab === "shorts") {
         urlPinnedView = false;
         activeShortsTab = "reports";
         viewMode = TAB_DEFAULT_VIEW[tab];
         setShortsViewButtons(activeShortsTab);
+        setViewButtons(viewMode);
+    } else if (tab === "announcements") {
+        urlPinnedView = false;
+        viewMode = "campaigns";
         setViewButtons(viewMode);
     } else if (tab === "guide") {
         urlPinnedView = false;
@@ -1006,6 +1226,7 @@ function getFiltered() {
     const source = document.getElementById("source-filter").value;
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
+    const filingScope = document.getElementById("filing-scope-filter").value;
     const search = document.getElementById("search-input").value.toLowerCase();
     const sort = document.getElementById("sort-select").value;
 
@@ -1032,6 +1253,7 @@ function getFiltered() {
             if (activist && d.activist !== activist) return false;
             if (source && d.source !== source) return false;
             if (type && d.announcement_type !== type) return false;
+            if (activeTab === "filings" && filingScope === "activist-firms" && !isActivistFirmRecord(d)) return false;
             if (sector) {
                 const docSector = d.sector || "Unknown";
                 if (docSector !== sector) return false;
@@ -1068,6 +1290,58 @@ function getFiltered() {
     }
     performance.mark("filter-end");
     performance.measure("filter", "filter-start", "filter-end");
+    return filtered;
+}
+
+function flattenCampaignArtifacts(campaign) {
+    return [
+        ...(campaign.coverage_artifacts || []),
+        ...(campaign.low_trust_artifacts || []),
+        ...((campaign.events || []).flatMap(event => [
+            ...(event.artifacts || []),
+            ...(event.coverage_artifacts || []),
+        ])),
+    ];
+}
+
+function getFilteredTrackerCampaigns() {
+    const activist = document.getElementById("activist-filter").value;
+    const source = document.getElementById("source-filter").value;
+    const type = document.getElementById("type-filter").value;
+    const sector = document.getElementById("sector-filter").value;
+    const search = document.getElementById("search-input").value.toLowerCase();
+    const sort = document.getElementById("sort-select").value;
+
+    const filtered = (trackerData.campaigns || []).filter(campaign => {
+        if (activist && campaign.canonical_activist !== activist) return false;
+        if (sector) {
+            const campaignSector = campaign.sector || "Unknown";
+            if (campaignSector !== sector) return false;
+        }
+        if (type && !(campaign.events || []).some(event => event.event_type === type)) return false;
+        if (source) {
+            const hasSource = flattenCampaignArtifacts(campaign).some(artifact => (artifact.source_name || "") === source);
+            if (!hasSource) return false;
+        }
+        if (search) {
+            const haystack = [
+                campaign.canonical_activist,
+                campaign.canonical_target,
+                campaign.latest_material_event_type,
+                campaign.campaign_status,
+                ...flattenCampaignArtifacts(campaign).map(artifact => `${artifact.headline} ${artifact.source_name} ${artifact.evidence_rank}`),
+            ].join(" ").toLowerCase();
+            if (!haystack.includes(search)) return false;
+        }
+        return true;
+    });
+
+    filtered.sort((left, right) => {
+        if (sort === "date-asc") return (left.last_updated_at || "").localeCompare(right.last_updated_at || "");
+        if (sort === "activist") return (left.canonical_activist || "").localeCompare(right.canonical_activist || "");
+        return (right.last_updated_at || "").localeCompare(left.last_updated_at || "");
+    });
+
     return filtered;
 }
 
@@ -1141,6 +1415,27 @@ function updateStats(filtered) {
     if (activeTab === "guide") {
         document.getElementById("stats-bar").innerHTML = "";
         document.getElementById("header-stats").textContent = `${allData.length} records · ${new Set(allData.filter(d => !isShortRecord(d)).map(d => d.activist).filter(Boolean)).size} activists`;
+        return;
+    }
+    if (activeTab === "announcements") {
+        const campaigns = filtered;
+        const activists = new Set(campaigns.map(c => c.canonical_activist).filter(Boolean)).size;
+        const targets = new Set(campaigns.map(c => c.canonical_target).filter(Boolean)).size;
+        const primaryArtifacts = campaigns.reduce((sum, c) => sum + (c.primary_artifact_count || 0), 0);
+        const coverage = campaigns.reduce((sum, c) => sum + (c.coverage_count || 0), 0);
+        const provisional = campaigns.filter(c => c.provisional).length;
+
+        document.getElementById("stats-bar").innerHTML = [
+            `<span class="stat-item"><strong>${campaigns.length}</strong> campaigns</span>`,
+            `<span class="stat-item"><strong>${activists}</strong> activists</span>`,
+            `<span class="stat-item"><strong>${targets}</strong> targets</span>`,
+            `<span class="stat-item"><strong>${primaryArtifacts}</strong> primary artifacts</span>`,
+            `<span class="stat-item"><strong>${coverage}</strong> related articles</span>`,
+            `<span class="stat-item"><strong>${provisional}</strong> provisional</span>`,
+        ].join("");
+
+        document.getElementById("header-stats").textContent =
+            `${(trackerData.counts.campaigns || campaigns.length).toLocaleString()} campaigns · ${(trackerData.counts.confirmed || 0).toLocaleString()} confirmed`;
         return;
     }
     const uniqueActivists = new Set(filtered.map(d => activeTab === "shorts" ? getShortPublisher(d) : d.activist).filter(Boolean)).size;
@@ -1691,6 +1986,255 @@ function renderCampaigns() {
     }).join("");
 }
 
+function trackerArtifactUrl(artifact) {
+    if (!DEPLOY_MODE && artifact.pdf_filename) {
+        return buildAssetPath(`pdfs/${encodeURIComponent(artifact.pdf_filename)}`);
+    }
+    return artifact.source_url || "#";
+}
+
+function trackerArtifactReadingListId(campaign, artifact) {
+    if (artifact.raw_id) return artifact.raw_id;
+    return stableId({
+        original_url: artifact.source_url,
+        pdf_filename: artifact.pdf_filename,
+        activist: campaign.canonical_activist,
+        target_company: campaign.canonical_target,
+        date: artifact.published_at,
+        title: artifact.headline || artifact.title || "",
+    });
+}
+
+function trackerEvidenceChip(rank, extraClass = "") {
+    const label = TRACKER_EVIDENCE_LABELS[rank] || rank || "Source";
+    return `<span class="detail-chip${extraClass ? ` ${extraClass}` : ""}">${escapeHtml(label)}</span>`;
+}
+
+function trackerStatusChip(status) {
+    const label = TRACKER_STATUS_LABELS[status] || status || "Unknown";
+    const statusClass = status ? ` tracker-status-${status}` : "";
+    return `<span class="detail-chip tracker-status-chip${statusClass}">${escapeHtml(label)}</span>`;
+}
+
+function trackerAttachmentChip(confidence) {
+    if (typeof confidence !== "number") return "";
+    return `<span class="detail-chip tracker-confidence-chip">${Math.round(confidence * 100)}% confidence</span>`;
+}
+
+function findCampaignEvent(campaign, eventId) {
+    return (campaign.events || []).find(event => event.event_id === eventId) || null;
+}
+
+function buildTrackerArtifactRow(campaign, artifact, options = {}) {
+    const {
+        bucketLabel = "",
+        secondary = false,
+        lowTrust = false,
+    } = options;
+    const sourceLabel = trackerEvidenceChip(artifact.evidence_rank, "tracker-artifact-chip");
+    const confidenceChip = trackerAttachmentChip(artifact.attachment_confidence);
+    const relatedCount = artifact.related_count || 0;
+    const relatedChip = relatedCount ? `<span class="detail-chip tracker-related-chip">+${relatedCount} related</span>` : "";
+    const readingListId = trackerArtifactReadingListId(campaign, artifact);
+    const saveButton = readingListId ? renderSaveButton(readingListId) : "";
+    const openLabel = !DEPLOY_MODE && artifact.pdf_filename ? "Open PDF" : "Open";
+    const artifactMeta = [
+        SOURCE_LABELS[artifact.source_name] || artifact.source_name || "Unknown source",
+        artifact.artifact_type ? artifact.artifact_type.replace(/_/g, " ") : "",
+        bucketLabel,
+    ].filter(Boolean).join(" · ");
+
+    return `
+        <div class="tracker-artifact-row${secondary ? " tracker-artifact-row-secondary" : ""}${lowTrust ? " tracker-artifact-row-low-trust" : ""}">
+            <div class="tracker-artifact-copy">
+                <div class="tracker-artifact-headline">${escapeHtml(artifact.headline || artifact.title || "Untitled artifact")}</div>
+                <div class="tracker-artifact-meta">${escapeHtml(artifactMeta)}</div>
+                <div class="tracker-artifact-chips">
+                    ${sourceLabel}
+                    ${confidenceChip}
+                    ${relatedChip}
+                </div>
+            </div>
+            <div class="tracker-artifact-date">${escapeHtml(formatDate(artifact.published_at))}</div>
+            <div class="tracker-artifact-actions">
+                <a class="row-action-btn${artifact.is_primary ? " primary" : ""}" href="${escapeHtml(trackerArtifactUrl(artifact))}" target="_blank" rel="noopener noreferrer">${escapeHtml(openLabel)}</a>
+                ${saveButton}
+            </div>
+        </div>
+    `;
+}
+
+function buildTrackerCoverageBucket(title, artifacts, options = {}) {
+    if (!artifacts || !artifacts.length) return "";
+    const rows = artifacts.map(artifact => buildTrackerArtifactRow(options.campaign, artifact, options)).join("");
+    return `
+        <div class="tracker-bucket${options.lowTrust ? " tracker-bucket-low-trust" : ""}">
+            <div class="tracker-bucket-head">
+                <span class="tracker-bucket-title">${escapeHtml(title)}</span>
+                <span class="tracker-bucket-count">${artifacts.length} surfaced</span>
+            </div>
+            <div class="tracker-bucket-body">
+                ${rows}
+            </div>
+        </div>
+    `;
+}
+
+function buildTrackerTimeline(campaign) {
+    const materialEvents = (campaign.events || []).filter(event => event.is_material_node);
+    if (!materialEvents.length) {
+        return `<div class="tracker-empty-timeline">No material timeline nodes yet. Coverage is attached below until stronger primary evidence arrives.</div>`;
+    }
+
+    return `
+        <div class="tracker-timeline">
+            ${materialEvents.map(event => {
+                const previousEvent = findCampaignEvent(campaign, event.previous_event_id);
+                const triggerEvent = findCampaignEvent(campaign, event.trigger_event_id);
+                const eventEvidenceRank = (event.artifacts || [])[0]?.evidence_rank;
+                const primaryArtifacts = (event.artifacts || []).map(artifact => buildTrackerArtifactRow(campaign, artifact)).join("");
+                const coverageBucket = buildTrackerCoverageBucket("Related Coverage", event.coverage_artifacts || [], { secondary: true, campaign });
+
+                return `
+                    <div class="tracker-event">
+                        <div class="tracker-event-rail">
+                            <span class="tracker-event-dot"></span>
+                        </div>
+                        <div class="tracker-event-body">
+                            <div class="tracker-event-head">
+                                <div>
+                                    <div class="tracker-event-kicker">
+                                        <span>${escapeHtml(TRACKER_EVENT_LABELS[event.event_type] || event.event_type)}</span>
+                                        <span>${escapeHtml(event.actor_side || "other")}</span>
+                                    </div>
+                                    <div class="tracker-event-date">${escapeHtml(formatDate(event.event_date))}</div>
+                                </div>
+                                <div class="tracker-event-chips">
+                                    <span class="detail-chip tracker-materiality-chip">${event.materiality_score} materiality</span>
+                                    ${eventEvidenceRank ? trackerEvidenceChip(eventEvidenceRank, "tracker-artifact-chip") : ""}
+                                </div>
+                            </div>
+                            ${(previousEvent || triggerEvent) ? `
+                                <div class="tracker-event-links">
+                                    ${previousEvent ? `<span class="tracker-link-chip">Previous: ${escapeHtml(TRACKER_EVENT_LABELS[previousEvent.event_type] || previousEvent.event_type)}</span>` : ""}
+                                    ${triggerEvent ? `<span class="tracker-link-chip">Triggered by: ${escapeHtml(TRACKER_EVENT_LABELS[triggerEvent.event_type] || triggerEvent.event_type)}</span>` : ""}
+                                </div>
+                            ` : ""}
+                            <div class="tracker-event-artifacts">
+                                ${primaryArtifacts}
+                            </div>
+                            ${coverageBucket}
+                        </div>
+                    </div>
+                `;
+            }).join("")}
+        </div>
+    `;
+}
+
+function buildTrackerHeader() {
+    return `
+        <div class="list-header tracker-grid">
+            <span>Activist</span>
+            <span>Campaign</span>
+            <span class="col-right">Latest Event</span>
+            <span class="col-right">Updated</span>
+            <span class="col-right">Status</span>
+            <span class="col-right">Open</span>
+        </div>
+    `;
+}
+
+function renderTracker() {
+    if (!trackerLoaded) {
+        ensureTrackerData(true);
+        updateStats([]);
+        document.getElementById("list-container").innerHTML = '<div class="empty-state">Loading campaign tracker…</div>';
+        return;
+    }
+
+    const campaigns = getFilteredTrackerCampaigns();
+    const container = document.getElementById("list-container");
+    updateStats(campaigns);
+
+    if (!campaigns.length) {
+        container.innerHTML = '<div class="empty-state">No campaigns match your tracker filters.</div>';
+        return;
+    }
+
+    container.innerHTML = buildTrackerHeader() + campaigns.map(campaign => {
+        const isOpen = expandedCampaigns.has(campaign.campaign_id);
+        const latestEventLabel = TRACKER_EVENT_LABELS[campaign.latest_material_event_type] || campaign.latest_material_event_type || "Campaign Update";
+        const summaryLine = [
+            `${campaign.primary_artifact_count || 0} primary`,
+            `${campaign.coverage_count || 0} related`,
+            campaign.confirmation_source !== "none"
+                ? `confirmed by ${(TRACKER_EVIDENCE_LABELS[campaign.confirmation_source] || campaign.confirmation_source).toLowerCase()}`
+                : "awaiting confirmation",
+        ].join(" · ");
+
+        return `
+            <div class="campaign-entry tracker-entry">
+                <div class="campaign-group-header tracker-group-header${isOpen ? " expanded" : ""}" data-campaign-key="${escapeHtml(campaign.campaign_id)}" role="button" tabindex="0" aria-expanded="${isOpen}" style="--row-color:${activistColor(campaign.canonical_activist)}">
+                    <span class="campaign-activist">${escapeHtml(campaign.canonical_activist || "Unknown")}</span>
+                    <span class="campaign-summary row-summary-with-logo">
+                        ${renderLogoSlot({ target_company: campaign.canonical_target })}
+                        <span class="summary-copy">
+                            <span class="campaign-target">${escapeHtml(campaign.canonical_target || "Unknown")}</span>
+                            <span class="campaign-latest">${escapeHtml(summaryLine)}</span>
+                        </span>
+                    </span>
+                    <span class="campaign-meta">${escapeHtml(latestEventLabel)}</span>
+                    <span class="campaign-range">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
+                    <span class="campaign-count">${trackerStatusChip(campaign.campaign_status)}</span>
+                    <span class="campaign-actions">
+                        <span class="campaign-toggle" aria-hidden="true">${isOpen ? "−" : "+"}</span>
+                    </span>
+                </div>
+                ${isOpen ? `
+                    <div class="campaign-group-docs tracker-group-docs">
+                        <div class="campaign-docs-shell tracker-docs-shell">
+                            <div class="tracker-detail-top">
+                                <div class="tracker-detail-metrics">
+                                    <div class="tracker-metric">
+                                        <span class="detail-field-label">First Seen</span>
+                                        <span class="detail-field-value">${escapeHtml(formatDate(campaign.first_seen_at))}</span>
+                                    </div>
+                                    <div class="tracker-metric">
+                                        <span class="detail-field-label">Last Updated</span>
+                                        <span class="detail-field-value">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
+                                    </div>
+                                    <div class="tracker-metric">
+                                        <span class="detail-field-label">Origin</span>
+                                        <span class="detail-field-value">${escapeHtml(TRACKER_EVENT_LABELS[(findCampaignEvent(campaign, campaign.originating_event_id) || {}).event_type] || "Unknown")}</span>
+                                    </div>
+                                    <div class="tracker-metric">
+                                        <span class="detail-field-label">Confirmation</span>
+                                        <span class="detail-field-value">${trackerEvidenceChip(campaign.confirmation_source === "none" ? "news" : campaign.confirmation_source)}</span>
+                                    </div>
+                                </div>
+                                <div class="tracker-detail-summary">
+                                    <div class="tracker-detail-summary-line">
+                                        ${trackerStatusChip(campaign.campaign_status)}
+                                        ${campaign.provisional ? '<span class="detail-chip tracker-provisional-chip">Provisional</span>' : ""}
+                                        ${campaign.sector ? `<span class="detail-chip">${escapeHtml(campaign.sector)}</span>` : ""}
+                                    </div>
+                                    <div class="tracker-detail-copy">
+                                        One campaign row, primary evidence first, related coverage attached underneath the relevant event or campaign bucket.
+                                    </div>
+                                </div>
+                            </div>
+                            ${buildTrackerTimeline(campaign)}
+                            ${buildTrackerCoverageBucket("Campaign-Level Coverage", campaign.coverage_artifacts || [], { secondary: true, bucketLabel: "Campaign coverage", campaign })}
+                            ${buildTrackerCoverageBucket("Low-Trust Attachments", campaign.low_trust_artifacts || [], { secondary: true, lowTrust: true, bucketLabel: "Low-trust match", campaign })}
+                        </div>
+                    </div>
+                ` : ""}
+            </div>
+        `;
+    }).join("");
+}
+
 function render() {
     writeUrlState();
     const controls = document.querySelector(".control-panel");
@@ -1703,7 +2247,8 @@ function render() {
     } else {
         controls.style.display = "";
         stats.style.display = "";
-        if (activeTab === "shorts") renderList();
+        if (activeTab === "announcements") renderTracker();
+        else if (activeTab === "shorts") renderList();
         else if (viewMode === "campaigns") renderCampaigns();
         else renderList();
     }
@@ -1736,7 +2281,7 @@ document.getElementById("list-container").addEventListener("click", e => {
     if (row) {
         const id = row.dataset.id;
         expandedId = expandedId === id ? null : id;
-        renderList();
+        render();
         return;
     }
 
@@ -1745,7 +2290,7 @@ document.getElementById("list-container").addEventListener("click", e => {
         const key = campaignHeader.dataset.campaignKey;
         if (expandedCampaigns.has(key)) expandedCampaigns.delete(key);
         else expandedCampaigns.add(key);
-        renderCampaigns();
+        render();
     }
 });
 
@@ -1841,7 +2386,12 @@ document.getElementById("activist-filter").addEventListener("change", render);
 document.getElementById("source-filter").addEventListener("change", render);
 document.getElementById("type-filter").addEventListener("change", render);
 document.getElementById("sector-filter").addEventListener("change", render);
+document.getElementById("filing-scope-filter").addEventListener("change", render);
 document.getElementById("search-input").addEventListener("input", () => {
+    if (activeTab === "announcements") {
+        render();
+        return;
+    }
     // Clear server-side results when user edits — fall back to client-side substring
     if (semanticResultIds) { semanticResultIds = null; }
     if (ftsResultIds) { ftsResultIds = null; }
@@ -1850,6 +2400,10 @@ document.getElementById("search-input").addEventListener("input", () => {
 document.getElementById("search-input").addEventListener("keydown", e => {
     if (e.key !== "Enter") return;
     const q = document.getElementById("search-input").value.trim();
+    if (activeTab === "announcements") {
+        render();
+        return;
+    }
     if (semanticMode) {
         runSemanticSearch(q);
     } else {
