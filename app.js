@@ -113,6 +113,52 @@ const NON_ACTIVIST_FILER_PATTERNS = [
     "norges bank",
     "capital group",
     "invesco",
+    "eli lilly",
+    "paramount skydance",
+    "netflix",
+];
+
+const ACTIVIST_STYLE_KEYWORDS = [
+    "capital",
+    "management",
+    "partners",
+    "partner",
+    "advisors",
+    "advisor",
+    "investments",
+    "investment",
+    "fund",
+    "funds",
+    "asset",
+    "opportunities",
+    "value",
+];
+
+const ISSUER_LIKE_KEYWORDS = [
+    "corp",
+    "corporation",
+    "company",
+    "co",
+    "inc",
+    "plc",
+    "pharmaceutical",
+    "pharmaceuticals",
+    "therapeutics",
+    "biosciences",
+    "discovery",
+    "skydance",
+    "media",
+    "entertainment",
+    "energy",
+    "holdings",
+];
+
+const PRIVATE_VEHICLE_FORMS = [
+    "llc",
+    "lp",
+    "ltd",
+    "limited",
+    "sa",
 ];
 
 const TAB_CONTENT_TYPES = {
@@ -719,9 +765,12 @@ function isActivistFirmRecord(d) {
     if (d.source === "sec_edgar") return true;
     if (KNOWN_ACTIVIST_FIRM_PATTERNS.some(pattern => name.includes(pattern))) return true;
     if (NON_ACTIVIST_FILER_PATTERNS.some(pattern => name.includes(pattern))) return false;
-    const hasFirmStructure = /\b(capital|management|partners|partner|advisors|advisor|investments|investment|fund|funds)\b/.test(name);
-    const looksInstitutional = /\b(bank|corp|corporation|insurance|trust|holdings?)\b/.test(name);
-    return hasFirmStructure && !looksInstitutional;
+    const keywordHits = ACTIVIST_STYLE_KEYWORDS.filter(keyword => new RegExp(`\\b${keyword}\\b`).test(name)).length;
+    const looksIssuerLike = ISSUER_LIKE_KEYWORDS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name));
+    const hasFundLegalForm = /\b(lp|llc|ltd|limited)\b/.test(name);
+    const hasPrivateVehicleForm = PRIVATE_VEHICLE_FORMS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name));
+    const looksLikePerson = /^[a-z]+ [a-z]+(?: [a-z])?$/.test(name);
+    return !looksIssuerLike && (keywordHits >= 2 || (keywordHits >= 1 && hasFundLegalForm) || hasPrivateVehicleForm || looksLikePerson);
 }
 
 async function fetchJsonFile(suffix) {
@@ -1261,6 +1310,7 @@ function getFiltered() {
         }
         if (SIGNAL_TIER_TABS.has(activeTab) && activeSignalTier !== "all") {
             if ((d.signal_tier || "low") !== activeSignalTier) return false;
+            if (activeTab === "filings" && activeSignalTier === "high" && !isActivistFirmRecord(d)) return false;
         }
         // Server-side search results (semantic or FTS) — only show matched records
         if (semanticRankMap) return semanticRankMap.has(d.id);
