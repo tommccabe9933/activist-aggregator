@@ -63,6 +63,43 @@ const TRACKER_EVIDENCE_LABELS = {
     news: "News",
 };
 
+const EVENT_TAG_LABELS = {
+    stake_disclosure: "Stake",
+    activist_letter: "Letter",
+    activist_deck: "Deck",
+    proxy_filing: "Proxy",
+    board_nomination: "Board",
+    company_response: "Response",
+    settlement: "Settlement",
+    strategic_review: "Review",
+    vote_result: "Vote",
+};
+
+const STRATEGY_TAG_LABELS = {
+    board_change: "Board Change",
+    sale_process: "Sale Process",
+    breakup: "Breakup",
+    capital_return: "Capital Return",
+    governance: "Governance",
+    operating_turnaround: "Turnaround",
+    valuation_gap: "Valuation Gap",
+    balance_sheet: "Balance Sheet",
+    asset_monetization: "Asset Monetization",
+    take_private_or_merger: "Take-Private / Merger",
+};
+
+const QUALITY_TAG_LABELS = {
+    primary_filing: "Primary Filing",
+    primary_fund: "Primary Fund",
+    company_release: "Company Release",
+    wire: "Wire",
+    news: "News",
+    provisional: "Provisional",
+    confirmed: "Confirmed",
+    high_signal: "High Signal",
+    medium_signal: "Medium Signal",
+};
+
 const FILER_ROLE_LABELS = {
     "activist-firm": "Activist Firms",
     "individual-activist": "Individual Activists",
@@ -241,6 +278,7 @@ let focusedIndex = -1;
 let urlPinnedView = false;
 let tickerCompanyMap = new Map();
 let accessionTargetMap = new Map();
+let pendingUrlFilterState = null;
 
 // Search mode state
 let semanticMode = false;
@@ -792,7 +830,9 @@ function tokenizeEntityName(value) {
 }
 
 function looksLikeIndividualActivistName(name) {
-    return /^[a-z]+ [a-z]+(?: [a-z])?$/.test(name);
+    if (!/^[a-z]+ [a-z]+(?: [a-z])?$/.test(name)) return false;
+    const businessWords = new Set([...ACTIVIST_STYLE_KEYWORDS, ...ISSUER_LIKE_KEYWORDS, ...PRIVATE_VEHICLE_FORMS]);
+    return !name.split(" ").some(token => businessWords.has(token));
 }
 
 function namesLikelySameEntity(left, right) {
@@ -808,6 +848,7 @@ function namesLikelySameEntity(left, right) {
 }
 
 function isActivistFirmRecord(d) {
+    if (d.filer_role) return d.filer_role === "activist-firm" || d.filer_role === "individual-activist";
     const name = normalizeFilerText(d.activist || "");
     if (!name) return false;
     if (d.source === "sec_edgar") return true;
@@ -821,12 +862,21 @@ function isActivistFirmRecord(d) {
     return !looksIssuerLike && (keywordHits >= 2 || (keywordHits >= 1 && hasFundLegalForm) || hasPrivateVehicleForm || looksLikePerson);
 }
 
+function matchesKnownActivistFirm(name) {
+    return KNOWN_ACTIVIST_FIRM_PATTERNS.some(pattern => name.includes(pattern));
+}
+
 function getFilerRole(d) {
+    if (d.filer_role) return d.filer_role;
     const name = normalizeFilerText(d.activist || "");
     const target = normalizeFilerText(d.target_company || "");
     if (!name) return "institutional-other";
     if (isActivistFirmRecord(d)) {
-        return looksLikeIndividualActivistName(name) ? "individual-activist" : "activist-firm";
+        const looksFirmLike = d.source === "sec_edgar"
+            || matchesKnownActivistFirm(name)
+            || ACTIVIST_STYLE_KEYWORDS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name))
+            || PRIVATE_VEHICLE_FORMS.some(keyword => new RegExp(`\\b${keyword}\\b`).test(name));
+        return looksLikeIndividualActivistName(name) && !looksFirmLike ? "individual-activist" : "activist-firm";
     }
     if (namesLikelySameEntity(name, target)) return "issuer-company";
     if (NON_ACTIVIST_FILER_PATTERNS.some(pattern => name.includes(pattern))) return "institutional-other";
@@ -855,6 +905,77 @@ function passesRecency(dateStr, option) {
     const parsed = new Date(`${dateStr}T00:00:00`);
     if (Number.isNaN(parsed.getTime())) return false;
     return parsed >= cutoff;
+}
+
+function getSelectedValues(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return [];
+    return Array.from(select.selectedOptions).map(option => option.value).filter(Boolean);
+}
+
+function setSelectedValues(selectId, values) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const wanted = new Set(values || []);
+    Array.from(select.options).forEach(option => {
+        option.selected = wanted.has(option.value);
+    });
+}
+
+function setSelectValueIfAvailable(selectId, value) {
+    const select = document.getElementById(selectId);
+    if (!select || !value) return;
+    const hasOption = Array.from(select.options).some(option => option.value === value);
+    if (hasOption) select.value = value;
+}
+
+function applyPendingUrlFilterState() {
+    if (!pendingUrlFilterState) return;
+    setSelectValueIfAvailable("activist-filter", pendingUrlFilterState.activist);
+    setSelectValueIfAvailable("source-filter", pendingUrlFilterState.source);
+    setSelectValueIfAvailable("type-filter", pendingUrlFilterState.type);
+    setSelectValueIfAvailable("sector-filter", pendingUrlFilterState.sector);
+    setSelectValueIfAvailable("filing-scope-filter", pendingUrlFilterState.filingScope);
+    setSelectValueIfAvailable("filer-role-filter", pendingUrlFilterState.filerRole);
+    setSelectValueIfAvailable("campaign-status-filter", pendingUrlFilterState.campaignStatus);
+    setSelectValueIfAvailable("event-tag-filter", pendingUrlFilterState.eventTag);
+    setSelectValueIfAvailable("quality-tag-filter", pendingUrlFilterState.qualityTag);
+    setSelectedValues("strategy-tag-filter", pendingUrlFilterState.strategyTags);
+}
+
+function hasRequiredTags(recordTags, requiredTags) {
+    if (!requiredTags.length) return true;
+    const tagSet = new Set(recordTags || []);
+    return requiredTags.every(tag => tagSet.has(tag));
+}
+
+function titleCaseLabel(value) {
+    return (value || "")
+        .split(/[_\s]+/)
+        .filter(Boolean)
+        .map(token => token.charAt(0).toUpperCase() + token.slice(1))
+        .join(" ");
+}
+
+function eventTagLabel(tag) {
+    return EVENT_TAG_LABELS[tag] || titleCaseLabel(tag);
+}
+
+function strategyTagLabel(tag) {
+    return STRATEGY_TAG_LABELS[tag] || titleCaseLabel(tag);
+}
+
+function qualityTagLabel(tag) {
+    return QUALITY_TAG_LABELS[tag] || titleCaseLabel(tag);
+}
+
+function sectorTagLabel(tag) {
+    return tag === "unknown" ? "Unknown" : titleCaseLabel(tag);
+}
+
+function renderChipSet(tags, labelFn, className = "summary-chip") {
+    if (!tags || !tags.length) return "";
+    return `<span class="summary-tags">${tags.map(tag => `<span class="${className}">${escapeHtml(labelFn(tag))}</span>`).join("")}</span>`;
 }
 
 async function fetchJsonFile(suffix) {
@@ -891,6 +1012,11 @@ async function ensureTrackerData(background = false) {
                 updateTypeFilter();
                 updateSourceFilter();
                 updateCampaignStatusFilter();
+                updateEventTagFilter();
+                updateStrategyTagFilter();
+                updateQualityTagFilter();
+                applyPendingUrlFilterState();
+                pendingUrlFilterState = null;
                 render();
             }
             return trackerData;
@@ -991,6 +1117,9 @@ function populateFilters() {
     updateSourceFilter();
     updateFilerRoleFilter();
     updateCampaignStatusFilter();
+    updateEventTagFilter();
+    updateStrategyTagFilter();
+    updateQualityTagFilter();
     performance.mark("filters-end");
     performance.measure("populate-filters", "filters-start", "filters-end");
     console.debug(`[perf] populate-filters: ${performance.getEntriesByName("populate-filters").pop().duration.toFixed(0)}ms`);
@@ -1030,12 +1159,12 @@ function updateSectorFilter() {
     const sectors = {};
     if (activeTab === "announcements") {
         (trackerData.campaigns || []).forEach(c => {
-            const sector = c.sector || "Unknown";
+            const sector = (c.sector_tags || [])[0] || "unknown";
             sectors[sector] = (sectors[sector] || 0) + 1;
         });
     } else {
         getActivistRecords().forEach(d => {
-            const sector = d.sector || "Unknown";
+            const sector = (d.sector_tags || [])[0] || "unknown";
             sectors[sector] = (sectors[sector] || 0) + 1;
         });
     }
@@ -1043,7 +1172,7 @@ function updateSectorFilter() {
     Object.keys(sectors).sort().forEach(s => {
         const opt = document.createElement("option");
         opt.value = s;
-        opt.textContent = `${s} (${sectors[s]})`;
+        opt.textContent = `${sectorTagLabel(s)} (${sectors[s]})`;
         sectorSelect.appendChild(opt);
     });
     if (currentVal) {
@@ -1149,6 +1278,120 @@ function updateCampaignStatusFilter() {
     }
 }
 
+function updateEventTagFilter() {
+    const eventSelect = document.getElementById("event-tag-filter");
+    const currentVal = eventSelect.value;
+    while (eventSelect.options.length > 1) eventSelect.remove(1);
+    if (activeTab === "announcements") {
+        const counts = {};
+        (trackerData.campaigns || []).forEach(campaign => {
+            (campaign.event_tags || []).forEach(tag => {
+                counts[tag] = (counts[tag] || 0) + 1;
+            });
+        });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${eventTagLabel(tag)} (${counts[tag]})`;
+            eventSelect.appendChild(opt);
+        });
+    } else if (activeTab === "filings") {
+        const counts = {};
+        getActivistRecords()
+            .filter(d => d.content_type === "filing")
+            .forEach(d => {
+                (d.event_tags || []).forEach(tag => {
+                    counts[tag] = (counts[tag] || 0) + 1;
+                });
+            });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${eventTagLabel(tag)} (${counts[tag]})`;
+            eventSelect.appendChild(opt);
+        });
+    }
+    if (currentVal) {
+        eventSelect.value = currentVal;
+        if (eventSelect.value !== currentVal) eventSelect.value = "";
+    }
+}
+
+function updateStrategyTagFilter() {
+    const strategySelect = document.getElementById("strategy-tag-filter");
+    const currentVals = getSelectedValues("strategy-tag-filter");
+    while (strategySelect.options.length) strategySelect.remove(0);
+    if (activeTab === "announcements") {
+        const counts = {};
+        (trackerData.campaigns || []).forEach(campaign => {
+            (campaign.strategy_tags || []).forEach(tag => {
+                counts[tag] = (counts[tag] || 0) + 1;
+            });
+        });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${strategyTagLabel(tag)} (${counts[tag]})`;
+            strategySelect.appendChild(opt);
+        });
+    } else if (activeTab === "filings") {
+        const counts = {};
+        getActivistRecords()
+            .filter(d => d.content_type === "filing")
+            .forEach(d => {
+                (d.strategy_tags || []).forEach(tag => {
+                    counts[tag] = (counts[tag] || 0) + 1;
+                });
+            });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${strategyTagLabel(tag)} (${counts[tag]})`;
+            strategySelect.appendChild(opt);
+        });
+    }
+    setSelectedValues("strategy-tag-filter", currentVals);
+}
+
+function updateQualityTagFilter() {
+    const qualitySelect = document.getElementById("quality-tag-filter");
+    const currentVal = qualitySelect.value;
+    while (qualitySelect.options.length > 1) qualitySelect.remove(1);
+    if (activeTab === "announcements") {
+        const counts = {};
+        (trackerData.campaigns || []).forEach(campaign => {
+            (campaign.quality_tags || []).forEach(tag => {
+                counts[tag] = (counts[tag] || 0) + 1;
+            });
+        });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${qualityTagLabel(tag)} (${counts[tag]})`;
+            qualitySelect.appendChild(opt);
+        });
+    } else if (activeTab === "filings") {
+        const counts = {};
+        getActivistRecords()
+            .filter(d => d.content_type === "filing")
+            .forEach(d => {
+                (d.quality_tags || []).forEach(tag => {
+                    counts[tag] = (counts[tag] || 0) + 1;
+                });
+            });
+        Object.keys(counts).sort().forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            opt.textContent = `${qualityTagLabel(tag)} (${counts[tag]})`;
+            qualitySelect.appendChild(opt);
+        });
+    }
+    if (currentVal) {
+        qualitySelect.value = currentVal;
+        if (qualitySelect.value !== currentVal) qualitySelect.value = "";
+    }
+}
+
 function updateSourceFilter() {
     if (activeTab === "guide") return;
     const sourceSelect = document.getElementById("source-filter");
@@ -1241,6 +1484,10 @@ function syncToolbarState() {
     const filingScope = document.getElementById("filing-scope-filter");
     const filerRole = document.getElementById("filer-role-filter");
     const campaignStatus = document.getElementById("campaign-status-filter");
+    const eventTag = document.getElementById("event-tag-filter");
+    const strategyTag = document.getElementById("strategy-tag-filter");
+    const qualityTag = document.getElementById("quality-tag-filter");
+    const typeFilter = document.getElementById("type-filter");
     const recency = document.getElementById("recency-filter");
     const semanticToggle = document.getElementById("semantic-toggle");
 
@@ -1253,6 +1500,10 @@ function syncToolbarState() {
     filingScope.style.display = activeTab === "filings" ? "" : "none";
     filerRole.style.display = activeTab === "filings" ? "" : "none";
     campaignStatus.style.display = trackerMode ? "" : "none";
+    eventTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
+    strategyTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
+    qualityTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
+    typeFilter.style.display = trackerMode ? "none" : "";
     recency.style.display = activeTab === "guide" ? "none" : "";
     if (semanticToggle) semanticToggle.style.display = trackerMode ? "none" : "";
     sortByParty.textContent = shortsMode ? "By Publisher" : "By Activist";
@@ -1301,13 +1552,19 @@ function readUrlState() {
         activeSignalTier = TAB_DEFAULT_SIGNAL[activeTab] || "all";
     }
 
-    if (params.get("activist")) document.getElementById("activist-filter").value = params.get("activist");
-    if (params.get("source")) document.getElementById("source-filter").value = params.get("source");
-    if (params.get("type")) document.getElementById("type-filter").value = params.get("type");
-    if (params.get("sector")) document.getElementById("sector-filter").value = params.get("sector");
-    if (params.get("filing_scope")) document.getElementById("filing-scope-filter").value = params.get("filing_scope");
-    if (params.get("filer_role")) document.getElementById("filer-role-filter").value = params.get("filer_role");
-    if (params.get("campaign_status")) document.getElementById("campaign-status-filter").value = params.get("campaign_status");
+    pendingUrlFilterState = {
+        activist: params.get("activist") || "",
+        source: params.get("source") || "",
+        type: params.get("type") || "",
+        sector: params.get("sector") || "",
+        filingScope: params.get("filing_scope") || "",
+        filerRole: params.get("filer_role") || "",
+        campaignStatus: params.get("campaign_status") || "",
+        eventTag: params.get("event_tag") || "",
+        strategyTags: (params.get("strategy_tags") || "").split(",").filter(Boolean),
+        qualityTag: params.get("quality_tag") || "",
+    };
+
     if (params.get("recency")) document.getElementById("recency-filter").value = params.get("recency");
     if (params.get("q")) document.getElementById("search-input").value = params.get("q");
     if (params.get("sort")) document.getElementById("sort-select").value = params.get("sort");
@@ -1337,6 +1594,13 @@ function readUrlState() {
     updateSourceFilter();
     updateFilerRoleFilter();
     updateCampaignStatusFilter();
+    updateEventTagFilter();
+    updateStrategyTagFilter();
+    updateQualityTagFilter();
+    applyPendingUrlFilterState();
+    if (activeTab !== "announcements" || trackerLoaded) {
+        pendingUrlFilterState = null;
+    }
     syncToolbarState();
 }
 
@@ -1349,6 +1613,9 @@ function writeUrlState() {
     const filingScope = document.getElementById("filing-scope-filter").value;
     const filerRole = document.getElementById("filer-role-filter").value;
     const campaignStatus = document.getElementById("campaign-status-filter").value;
+    const eventTag = document.getElementById("event-tag-filter").value;
+    const strategyTags = getSelectedValues("strategy-tag-filter");
+    const qualityTag = document.getElementById("quality-tag-filter").value;
     const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.trim();
     const sort = document.getElementById("sort-select").value;
@@ -1363,6 +1630,9 @@ function writeUrlState() {
         if (activeTab === "filings" && filingScope !== "all") params.set("filing_scope", filingScope);
         if (activeTab === "filings" && filerRole) params.set("filer_role", filerRole);
         if (activeTab === "announcements" && campaignStatus) params.set("campaign_status", campaignStatus);
+        if ((activeTab === "filings" || activeTab === "announcements") && eventTag) params.set("event_tag", eventTag);
+        if ((activeTab === "filings" || activeTab === "announcements") && strategyTags.length) params.set("strategy_tags", strategyTags.join(","));
+        if ((activeTab === "filings" || activeTab === "announcements") && qualityTag) params.set("quality_tag", qualityTag);
     }
     if (activeTab !== "guide" && recency) params.set("recency", recency);
     if (search) params.set("q", search);
@@ -1405,6 +1675,9 @@ function setActiveTab(tab, doRender = true) {
     updateSourceFilter();
     updateFilerRoleFilter();
     updateCampaignStatusFilter();
+    updateEventTagFilter();
+    updateStrategyTagFilter();
+    updateQualityTagFilter();
     if (tab === "shorts") {
         urlPinnedView = false;
         activeShortsTab = "reports";
@@ -1446,6 +1719,9 @@ function getFiltered() {
     const sector = document.getElementById("sector-filter").value;
     const filingScope = document.getElementById("filing-scope-filter").value;
     const filerRole = document.getElementById("filer-role-filter").value;
+    const eventTag = document.getElementById("event-tag-filter").value;
+    const strategyTags = getSelectedValues("strategy-tag-filter");
+    const qualityTag = document.getElementById("quality-tag-filter").value;
     const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.toLowerCase();
     const sort = document.getElementById("sort-select").value;
@@ -1481,8 +1757,11 @@ function getFiltered() {
             }
             if (activeTab === "filings" && filingScope === "activist-firms" && !isActivistFirmRecord(d)) return false;
             if (activeTab === "filings" && filerRole && getFilerRole(d) !== filerRole) return false;
+            if ((activeTab === "filings" || activeTab === "announcements") && eventTag && !(d.event_tags || []).includes(eventTag)) return false;
+            if ((activeTab === "filings" || activeTab === "announcements") && !hasRequiredTags(d.strategy_tags || [], strategyTags)) return false;
+            if ((activeTab === "filings" || activeTab === "announcements") && qualityTag && !(d.quality_tags || []).includes(qualityTag)) return false;
             if (sector) {
-                const docSector = d.sector || "Unknown";
+                const docSector = (d.sector_tags || [])[0] || "unknown";
                 if (docSector !== sector) return false;
             }
         }
@@ -1495,7 +1774,7 @@ function getFiltered() {
         if (semanticRankMap) return semanticRankMap.has(d.id);
         if (ftsRankMap) return ftsRankMap.has(d.id);
         if (search) {
-            const haystack = `${d.activist} ${d.publisher || ""} ${d.target_company} ${d.target_ticker || ""} ${d.title} ${d.form_type} ${d.announcement_type || ""} ${d.render_status || ""}`.toLowerCase();
+            const haystack = `${d.activist} ${d.publisher || ""} ${d.target_company} ${d.target_ticker || ""} ${d.title} ${d.form_type} ${d.announcement_type || ""} ${d.render_status || ""} ${(d.event_tags || []).join(" ")} ${(d.strategy_tags || []).join(" ")} ${(d.quality_tags || []).join(" ")}`.toLowerCase();
             if (!haystack.includes(search)) return false;
         }
         return true;
@@ -1539,6 +1818,9 @@ function getFilteredTrackerCampaigns() {
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
     const campaignStatus = document.getElementById("campaign-status-filter").value;
+    const eventTag = document.getElementById("event-tag-filter").value;
+    const strategyTags = getSelectedValues("strategy-tag-filter");
+    const qualityTag = document.getElementById("quality-tag-filter").value;
     const recency = document.getElementById("recency-filter").value;
     const search = document.getElementById("search-input").value.toLowerCase();
     const sort = document.getElementById("sort-select").value;
@@ -1547,8 +1829,11 @@ function getFilteredTrackerCampaigns() {
         if (activist && campaign.canonical_activist !== activist) return false;
         if (campaignStatus && campaign.campaign_status !== campaignStatus) return false;
         if (!passesRecency(campaign.last_updated_at, recency)) return false;
+        if (eventTag && !(campaign.event_tags || []).includes(eventTag)) return false;
+        if (!hasRequiredTags(campaign.strategy_tags || [], strategyTags)) return false;
+        if (qualityTag && !(campaign.quality_tags || []).includes(qualityTag)) return false;
         if (sector) {
-            const campaignSector = campaign.sector || "Unknown";
+            const campaignSector = (campaign.sector_tags || [])[0] || "unknown";
             if (campaignSector !== sector) return false;
         }
         if (type && !(campaign.events || []).some(event => event.event_type === type)) return false;
@@ -1562,6 +1847,9 @@ function getFilteredTrackerCampaigns() {
                 campaign.canonical_target,
                 campaign.latest_material_event_type,
                 campaign.campaign_status,
+                ...(campaign.event_tags || []),
+                ...(campaign.strategy_tags || []),
+                ...(campaign.quality_tags || []),
                 ...flattenCampaignArtifacts(campaign).map(artifact => `${artifact.headline} ${artifact.source_name} ${artifact.evidence_rank}`),
             ].join(" ").toLowerCase();
             if (!haystack.includes(search)) return false;
@@ -1710,6 +1998,26 @@ function markerChip(label) {
     return `<span class="marker-chip">${escapeHtml(label)}</span>`;
 }
 
+function filingSummaryChips(d) {
+    if (activeTab !== "filings") return "";
+    const tags = [];
+    const filerRole = getFilerRole(d);
+    if (filerRole) tags.push(`<span class="summary-chip summary-chip-role">${escapeHtml(FILER_ROLE_LABELS[filerRole] || filerRole)}</span>`);
+    if (d.event_tags && d.event_tags[0]) tags.push(`<span class="summary-chip">${escapeHtml(eventTagLabel(d.event_tags[0]))}</span>`);
+    if (d.strategy_tags && d.strategy_tags[0]) tags.push(`<span class="summary-chip">${escapeHtml(strategyTagLabel(d.strategy_tags[0]))}</span>`);
+    if (d.signal_tier) tags.push(`<span class="summary-chip summary-chip-quality">${escapeHtml(qualityTagLabel(`${d.signal_tier}_signal`))}</span>`);
+    return tags.length ? `<span class="summary-tags">${tags.join("")}</span>` : "";
+}
+
+function trackerSummaryChips(campaign) {
+    const tags = [];
+    if (campaign.latest_event_tag) tags.push(`<span class="summary-chip">${escapeHtml(eventTagLabel(campaign.latest_event_tag))}</span>`);
+    if (campaign.latest_strategy_tags && campaign.latest_strategy_tags[0]) tags.push(`<span class="summary-chip">${escapeHtml(strategyTagLabel(campaign.latest_strategy_tags[0]))}</span>`);
+    if (campaign.sector_tags && campaign.sector_tags[0]) tags.push(`<span class="summary-chip summary-chip-sector">${escapeHtml(sectorTagLabel(campaign.sector_tags[0]))}</span>`);
+    if (campaign.quality_tags && campaign.quality_tags[0]) tags.push(`<span class="summary-chip summary-chip-quality">${escapeHtml(qualityTagLabel(campaign.quality_tags[0]))}</span>`);
+    return tags.length ? `<span class="summary-tags">${tags.join("")}</span>` : "";
+}
+
 function renderSaveButton(id, withLabel = false) {
     const saved = ReadingList.has(id);
     const cls = withLabel ? "detail-save-btn" : "row-save-btn";
@@ -1800,6 +2108,11 @@ function buildDetailCard(d) {
     const contentType = CONTENT_TYPE_LABELS[d.content_type] || "Filing";
     const primaryLabel = d.pdf_filename ? "Open PDF" : "View Source";
     const primaryLink = pdfUrl(d);
+    const eventTags = renderChipSet(d.event_tags || [], eventTagLabel, "detail-chip");
+    const strategyTags = renderChipSet(d.strategy_tags || [], strategyTagLabel, "detail-chip");
+    const sectorTags = renderChipSet(d.sector_tags || [], sectorTagLabel, "detail-chip");
+    const qualityTags = renderChipSet(d.quality_tags || [], qualityTagLabel, "detail-chip");
+    const filerRole = activeTab === "filings" ? `<span class="detail-chip">${escapeHtml(FILER_ROLE_LABELS[getFilerRole(d)] || getFilerRole(d))}</span>` : "—";
     return `
         <div class="detail-card">
             <div class="detail-head">
@@ -1832,7 +2145,23 @@ function buildDetailCard(d) {
                 </div>
                 <div>
                     <span class="detail-field-label">Sector</span>
-                    <span class="detail-field-value">${d.sector ? `<span class="detail-chip">${escapeHtml(d.sector)}</span>` : "—"}</span>
+                    <span class="detail-field-value">${sectorTags || "—"}</span>
+                </div>
+                <div>
+                    <span class="detail-field-label">Event Tags</span>
+                    <span class="detail-field-value">${eventTags || "—"}</span>
+                </div>
+                <div>
+                    <span class="detail-field-label">Strategy Tags</span>
+                    <span class="detail-field-value">${strategyTags || "—"}</span>
+                </div>
+                <div>
+                    <span class="detail-field-label">Quality</span>
+                    <span class="detail-field-value">${qualityTags || "—"}</span>
+                </div>
+                <div>
+                    <span class="detail-field-label">Filer Role</span>
+                    <span class="detail-field-value">${filerRole}</span>
                 </div>
             </div>
             <div class="detail-actions">
@@ -2032,6 +2361,7 @@ function buildRowHtml(d) {
                     <span class="summary-copy">
                         <span class="row-target">${escapeHtml(target)}</span>
                         <span class="row-title">${escapeHtml(title)}</span>
+                        ${filingSummaryChips(d)}
                     </span>
                 </span>
                 <span class="row-marker">${markerChip(marker)}</span>
@@ -2276,6 +2606,12 @@ function buildTrackerArtifactRow(campaign, artifact, options = {}) {
         artifact.artifact_type ? artifact.artifact_type.replace(/_/g, " ") : "",
         bucketLabel,
     ].filter(Boolean).join(" · ");
+    const strategyChip = artifact.strategy_tags && artifact.strategy_tags[0]
+        ? `<span class="detail-chip tracker-artifact-chip">${escapeHtml(strategyTagLabel(artifact.strategy_tags[0]))}</span>`
+        : "";
+    const sectorChip = artifact.sector_tags && artifact.sector_tags[0]
+        ? `<span class="detail-chip tracker-artifact-chip">${escapeHtml(sectorTagLabel(artifact.sector_tags[0]))}</span>`
+        : "";
 
     return `
         <div class="tracker-artifact-row${secondary ? " tracker-artifact-row-secondary" : ""}${lowTrust ? " tracker-artifact-row-low-trust" : ""}">
@@ -2284,6 +2620,8 @@ function buildTrackerArtifactRow(campaign, artifact, options = {}) {
                 <div class="tracker-artifact-meta">${escapeHtml(artifactMeta)}</div>
                 <div class="tracker-artifact-chips">
                     ${sourceLabel}
+                    ${strategyChip}
+                    ${sectorChip}
                     ${confidenceChip}
                     ${relatedChip}
                 </div>
@@ -2327,6 +2665,9 @@ function buildTrackerTimeline(campaign) {
                 const eventEvidenceRank = (event.artifacts || [])[0]?.evidence_rank;
                 const primaryArtifacts = (event.artifacts || []).map(artifact => buildTrackerArtifactRow(campaign, artifact)).join("");
                 const coverageBucket = buildTrackerCoverageBucket("Related Coverage", event.coverage_artifacts || [], { secondary: true, campaign });
+                const eventStrategyChip = event.strategy_tags && event.strategy_tags[0]
+                    ? `<span class="detail-chip tracker-artifact-chip">${escapeHtml(strategyTagLabel(event.strategy_tags[0]))}</span>`
+                    : "";
 
                 return `
                     <div class="tracker-event">
@@ -2344,6 +2685,8 @@ function buildTrackerTimeline(campaign) {
                                 </div>
                                 <div class="tracker-event-chips">
                                     <span class="detail-chip tracker-materiality-chip">${event.materiality_score} materiality</span>
+                                    ${event.event_tags && event.event_tags[0] ? `<span class="detail-chip tracker-artifact-chip">${escapeHtml(eventTagLabel(event.event_tags[0]))}</span>` : ""}
+                                    ${eventStrategyChip}
                                     ${eventEvidenceRank ? trackerEvidenceChip(eventEvidenceRank, "tracker-artifact-chip") : ""}
                                 </div>
                             </div>
@@ -2430,6 +2773,7 @@ function renderTracker() {
                         <span class="summary-copy">
                             <span class="campaign-target">${escapeHtml(campaign.canonical_target || "Unknown")}</span>
                             <span class="campaign-latest">${escapeHtml(summaryLine)}</span>
+                            ${trackerSummaryChips(campaign)}
                         </span>
                     </span>
                     <span class="campaign-meta">${escapeHtml(latestEventLabel)}</span>
@@ -2466,7 +2810,10 @@ function renderTracker() {
                                     <div class="tracker-detail-summary-line">
                                         ${trackerStatusChip(campaign.campaign_status)}
                                         ${campaign.provisional ? '<span class="detail-chip tracker-provisional-chip">Provisional</span>' : ""}
-                                        ${campaign.sector ? `<span class="detail-chip">${escapeHtml(campaign.sector)}</span>` : ""}
+                                        ${renderChipSet(campaign.event_tags || [], eventTagLabel, "detail-chip")}
+                                        ${renderChipSet((campaign.latest_strategy_tags || campaign.strategy_tags || []).slice(0, 2), strategyTagLabel, "detail-chip")}
+                                        ${renderChipSet(campaign.sector_tags || [], sectorTagLabel, "detail-chip")}
+                                        ${renderChipSet(campaign.quality_tags || [], qualityTagLabel, "detail-chip")}
                                     </div>
                                     <div class="tracker-detail-copy">
                                         One campaign row, primary evidence first, related coverage attached underneath the relevant event or campaign bucket.
@@ -2638,6 +2985,9 @@ document.getElementById("sector-filter").addEventListener("change", render);
 document.getElementById("filing-scope-filter").addEventListener("change", render);
 document.getElementById("filer-role-filter").addEventListener("change", render);
 document.getElementById("campaign-status-filter").addEventListener("change", render);
+document.getElementById("event-tag-filter").addEventListener("change", render);
+document.getElementById("strategy-tag-filter").addEventListener("change", render);
+document.getElementById("quality-tag-filter").addEventListener("change", render);
 document.getElementById("recency-filter").addEventListener("change", render);
 document.getElementById("search-input").addEventListener("input", () => {
     if (activeTab === "announcements") {

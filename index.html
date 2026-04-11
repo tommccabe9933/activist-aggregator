@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="origin">
     <title>Activist Aggregator</title>
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=22">
 </head>
 <body>
     <header class="site-header">
@@ -127,6 +127,13 @@
                     <select id="campaign-status-filter" style="display:none">
                         <option value="">All Campaign Statuses</option>
                     </select>
+                    <select id="event-tag-filter" style="display:none">
+                        <option value="">All Event Tags</option>
+                    </select>
+                    <select id="strategy-tag-filter" multiple size="4" style="display:none"></select>
+                    <select id="quality-tag-filter" style="display:none">
+                        <option value="">All Quality</option>
+                    </select>
                     <select id="recency-filter">
                         <option value="">Any Time</option>
                         <option value="7d">Last 7 Days</option>
@@ -172,6 +179,6 @@
     <div class="rl-overlay" id="rl-overlay"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="app.js?v=21"></script>
+    <script src="app.js?v=23"></script>
 </body>
 </html>

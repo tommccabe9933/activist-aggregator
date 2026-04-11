@@ -1,5 +1,8 @@
 {
   "private": true,
+  "scripts": {
+    "build:tags": "python3 scripts/enrich_tags.py"
+  },
   "dependencies": {
     "sql.js": "^1.11.0"
   }
