@@ -3,7 +3,7 @@
 
 This keeps product-facing classification in the main repo by adding:
 - raw artifact tags in data/data.json
-- campaign / event / artifact tags in data/campaign_tracker.json
+- campaign / event / artifact tags in split tracker payloads
 - filter metadata in data/meta.json
 """
 
@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+from hashlib import sha1
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DATA_PATH = DATA_DIR / "data.json"
 TRACKER_PATH = DATA_DIR / "campaign_tracker.json"
+TRACKER_INDEX_PATH = DATA_DIR / "campaign_tracker_index.json"
+TRACKER_DETAIL_DIR = DATA_DIR / "campaign_tracker_details"
 META_PATH = DATA_DIR / "meta.json"
 
 EVENT_TAGS = [
@@ -169,7 +173,7 @@ def read_json(path: Path):
 
 
 def write_json(path: Path, payload):
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, separators=(",", ":")))
 
 
 def normalize_text(value: str | None) -> str:
@@ -570,6 +574,173 @@ def enrich_campaign(campaign: dict) -> dict:
     return enriched
 
 
+def sanitize_campaign_id(campaign_id: str | None) -> str:
+    raw = (campaign_id or "campaign").strip()
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("-").lower() or "campaign"
+    if safe != raw.lower() or len(safe) > 120:
+        digest = sha1(raw.encode("utf-8")).hexdigest()[:10]
+        safe = f"{safe[:100].rstrip('-')}-{digest}"
+    return safe
+
+
+def campaign_detail_rel_path(campaign_id: str | None) -> str:
+    safe = sanitize_campaign_id(campaign_id)
+    shard = safe[:2] if len(safe) >= 2 else "xx"
+    return f"campaign_tracker_details/{shard}/{safe}.json"
+
+
+def iter_campaign_artifacts(campaign: dict):
+    for artifact in campaign.get("coverage_artifacts", []):
+        yield artifact
+    for artifact in campaign.get("low_trust_artifacts", []):
+        yield artifact
+    for event in campaign.get("events", []):
+        for artifact in event.get("artifacts", []):
+            yield artifact
+        for artifact in event.get("coverage_artifacts", []):
+            yield artifact
+
+
+def choose_row_artifact(campaign: dict) -> dict | None:
+    latest_event_id = campaign.get("latest_material_event_id")
+    latest_event = next((event for event in campaign.get("events", []) if event.get("event_id") == latest_event_id), None)
+    candidate_groups = [
+        (latest_event or {}).get("artifacts", []),
+        (latest_event or {}).get("coverage_artifacts", []),
+        campaign.get("coverage_artifacts", []),
+        campaign.get("low_trust_artifacts", []),
+    ]
+    candidate_groups.extend(event.get("artifacts", []) for event in campaign.get("events", []))
+    for group in candidate_groups:
+        for artifact in group:
+            if artifact:
+                return {
+                    "raw_id": artifact.get("raw_id"),
+                    "source_url": artifact.get("source_url"),
+                    "pdf_filename": artifact.get("pdf_filename"),
+                    "published_at": artifact.get("published_at"),
+                    "headline": artifact.get("headline") or artifact.get("title"),
+                    "artifact_type": artifact.get("artifact_type"),
+                    "source_name": artifact.get("source_name"),
+                    "evidence_rank": artifact.get("evidence_rank"),
+                }
+    return None
+
+
+def tracker_search_text(campaign: dict) -> str:
+    parts = [
+        campaign.get("canonical_activist", ""),
+        campaign.get("canonical_target", ""),
+        campaign.get("latest_material_event_type", ""),
+        campaign.get("campaign_status", ""),
+        " ".join(campaign.get("event_tags", [])),
+        " ".join(campaign.get("strategy_tags", [])),
+        " ".join(campaign.get("quality_tags", [])),
+    ]
+    seen_headlines: list[str] = []
+    for artifact in iter_campaign_artifacts(campaign):
+        headline = (artifact.get("headline") or artifact.get("title") or "").strip()
+        if headline and headline not in seen_headlines:
+            seen_headlines.append(headline)
+        if len(seen_headlines) >= 3:
+            break
+    parts.extend(seen_headlines)
+    return " | ".join(part for part in parts if part)
+
+
+def build_tracker_index_payload(tracker_data: dict) -> dict:
+    campaigns = []
+    for campaign in tracker_data.get("campaigns", []):
+        material_event_types = collect_unique_tags(
+            *[
+                [event.get("event_type")]
+                for event in campaign.get("events", [])
+                if event.get("is_material_node") and event.get("event_type")
+            ]
+        )
+        source_names = collect_unique_tags(
+            *[[artifact.get("source_name")] for artifact in iter_campaign_artifacts(campaign) if artifact.get("source_name")]
+        )
+        campaigns.append(
+            {
+                "campaign_id": campaign.get("campaign_id"),
+                "canonical_target": campaign.get("canonical_target"),
+                "canonical_activist": campaign.get("canonical_activist"),
+                "campaign_status": campaign.get("campaign_status"),
+                "first_seen_at": campaign.get("first_seen_at"),
+                "last_updated_at": campaign.get("last_updated_at"),
+                "originating_event_id": campaign.get("originating_event_id"),
+                "latest_material_event_id": campaign.get("latest_material_event_id"),
+                "latest_material_event_type": campaign.get("latest_material_event_type"),
+                "coverage_count": campaign.get("coverage_count", 0),
+                "primary_artifact_count": campaign.get("primary_artifact_count", 0),
+                "provisional": campaign.get("provisional", False),
+                "confirmation_source": campaign.get("confirmation_source", "none"),
+                "event_tags": campaign.get("event_tags", []),
+                "strategy_tags": campaign.get("strategy_tags", []),
+                "sector_tags": campaign.get("sector_tags", ["unknown"]),
+                "quality_tags": campaign.get("quality_tags", []),
+                "latest_event_tag": campaign.get("latest_event_tag"),
+                "latest_strategy_tags": campaign.get("latest_strategy_tags", []),
+                "material_event_types": material_event_types,
+                "source_names": source_names,
+                "search_text": tracker_search_text(campaign),
+                "row_artifact": choose_row_artifact(campaign),
+                "detail_path": campaign_detail_rel_path(campaign.get("campaign_id")),
+            }
+        )
+    return {
+        "campaigns": campaigns,
+        "counts": tracker_data.get("counts", {}),
+    }
+
+
+def build_campaign_detail_payload(campaign: dict) -> dict:
+    return {
+        "campaign_id": campaign.get("campaign_id"),
+        "events": campaign.get("events", []),
+        "coverage_artifacts": campaign.get("coverage_artifacts", []),
+        "low_trust_artifacts": campaign.get("low_trust_artifacts", []),
+    }
+
+
+def write_tracker_payloads(tracker_data: dict):
+    index_payload = build_tracker_index_payload(tracker_data)
+    if TRACKER_DETAIL_DIR.exists():
+        shutil.rmtree(TRACKER_DETAIL_DIR)
+    TRACKER_DETAIL_DIR.mkdir(parents=True, exist_ok=True)
+
+    for campaign in tracker_data.get("campaigns", []):
+        detail_path = DATA_DIR / campaign_detail_rel_path(campaign.get("campaign_id"))
+        detail_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(detail_path, build_campaign_detail_payload(campaign))
+
+    write_json(TRACKER_INDEX_PATH, index_payload)
+
+
+def read_tracker_payload() -> dict:
+    if TRACKER_PATH.exists():
+        return read_json(TRACKER_PATH)
+    if TRACKER_INDEX_PATH.exists():
+        index_payload = read_json(TRACKER_INDEX_PATH)
+        campaigns = []
+        for summary in index_payload.get("campaigns", []):
+            detail = {}
+            detail_path = summary.get("detail_path")
+            if detail_path:
+                candidate = DATA_DIR / detail_path
+                if candidate.exists():
+                    detail = read_json(candidate)
+            merged = dict(summary)
+            merged.update(detail)
+            campaigns.append(merged)
+        return {
+            "campaigns": campaigns,
+            "counts": index_payload.get("counts", {}),
+        }
+    raise FileNotFoundError("No tracker payload found. Provide data/campaign_tracker.json or split tracker files.")
+
+
 def build_meta(raw_data: list[dict], tracker_data: dict) -> dict:
     raw_event_tags = sorted({tag for row in raw_data for tag in row.get("event_tags", [])})
     raw_strategy_tags = sorted({tag for row in raw_data for tag in row.get("strategy_tags", [])})
@@ -603,11 +774,11 @@ def build_meta(raw_data: list[dict], tracker_data: dict) -> dict:
 
 def main():
     raw_data = [enrich_raw_artifact(entry) for entry in read_json(DATA_PATH)]
-    tracker_data = read_json(TRACKER_PATH)
+    tracker_data = read_tracker_payload()
     tracker_data["campaigns"] = [enrich_campaign(campaign) for campaign in tracker_data.get("campaigns", [])]
     meta = build_meta(raw_data, tracker_data)
     write_json(DATA_PATH, raw_data)
-    write_json(TRACKER_PATH, tracker_data)
+    write_tracker_payloads(tracker_data)
     write_json(META_PATH, meta)
     print(f"Enriched {len(raw_data)} artifacts and {len(tracker_data.get('campaigns', []))} campaigns.")
 

@@ -268,6 +268,8 @@ let allData = [];
 let trackerData = { campaigns: [], counts: {} };
 let trackerLoaded = false;
 let trackerLoadPromise = null;
+let trackerDetailPromises = new Map();
+let trackerLoadingCampaigns = new Set();
 let activeTab = "presentations";
 let activeShortsTab = "reports";
 let activeSignalTier = TAB_DEFAULT_SIGNAL[activeTab];
@@ -978,6 +980,14 @@ function renderChipSet(tags, labelFn, className = "summary-chip") {
     return `<span class="summary-tags">${tags.map(tag => `<span class="${className}">${escapeHtml(labelFn(tag))}</span>`).join("")}</span>`;
 }
 
+function getTrackerCampaignById(campaignId) {
+    return (trackerData.campaigns || []).find(campaign => campaign.campaign_id === campaignId) || null;
+}
+
+function trackerCampaignHasDetails(campaign) {
+    return !!campaign && Array.isArray(campaign.events);
+}
+
 async function fetchJsonFile(suffix) {
     const candidatePaths = [
         buildAssetPath(suffix),
@@ -1001,7 +1011,7 @@ async function ensureTrackerData(background = false) {
     if (trackerLoaded) return trackerData;
     if (!trackerLoadPromise) {
         trackerLoadPromise = (async () => {
-            const fetchedTrackerData = await fetchJsonFile("campaign_tracker.json");
+            const fetchedTrackerData = await fetchJsonFile("campaign_tracker_index.json");
             trackerData = fetchedTrackerData || { campaigns: [], counts: {} };
             trackerLoaded = true;
             trackerLoadPromise = null;
@@ -1030,6 +1040,37 @@ async function ensureTrackerData(background = false) {
         return trackerLoadPromise;
     }
     return trackerLoadPromise;
+}
+
+async function ensureTrackerCampaignDetails(campaignId, background = false) {
+    const campaign = getTrackerCampaignById(campaignId);
+    if (!campaign) return null;
+    if (trackerCampaignHasDetails(campaign)) return campaign;
+    if (!campaign.detail_path) return campaign;
+
+    if (!trackerDetailPromises.has(campaignId)) {
+        trackerLoadingCampaigns.add(campaignId);
+        const detailPromise = fetchJsonFile(campaign.detail_path)
+            .then(detail => {
+                if (detail) Object.assign(campaign, detail);
+                trackerLoadingCampaigns.delete(campaignId);
+                trackerDetailPromises.delete(campaignId);
+                return campaign;
+            })
+            .catch(error => {
+                campaign.detail_error = true;
+                trackerLoadingCampaigns.delete(campaignId);
+                trackerDetailPromises.delete(campaignId);
+                throw error;
+            });
+        trackerDetailPromises.set(campaignId, detailPromise);
+    }
+
+    if (background) {
+        trackerDetailPromises.get(campaignId).catch(() => {});
+        return trackerDetailPromises.get(campaignId);
+    }
+    return trackerDetailPromises.get(campaignId);
 }
 
 function inferContentType(d) {
@@ -1098,7 +1139,6 @@ async function loadData() {
         readUrlState();
         render();
         ReadingList.updateUI();
-        window.setTimeout(() => ensureTrackerData(true), 0);
     } catch (e) {
         container.innerHTML = `
             <div class="empty-state">
@@ -1190,9 +1230,8 @@ function updateTypeFilter() {
     if (activeTab === "announcements") {
         const trackerTypeCounts = {};
         (trackerData.campaigns || []).forEach(c => {
-            (c.events || []).forEach(event => {
-                if (!event.is_material_node) return;
-                trackerTypeCounts[event.event_type] = (trackerTypeCounts[event.event_type] || 0) + 1;
+            (c.material_event_types || []).forEach(eventType => {
+                trackerTypeCounts[eventType] = (trackerTypeCounts[eventType] || 0) + 1;
             });
         });
         Object.keys(trackerTypeCounts).sort().forEach(type => {
@@ -1404,16 +1443,7 @@ function updateSourceFilter() {
 
     if (activeTab === "announcements") {
         (trackerData.campaigns || []).forEach(campaign => {
-            const nestedArtifacts = [
-                ...(campaign.coverage_artifacts || []),
-                ...(campaign.low_trust_artifacts || []),
-                ...((campaign.events || []).flatMap(event => [
-                    ...(event.artifacts || []),
-                    ...(event.coverage_artifacts || []),
-                ])),
-            ];
-            nestedArtifacts.forEach(artifact => {
-                const source = artifact.source_name || "other";
+            (campaign.source_names || []).forEach(source => {
                 sourceCounts[source] = (sourceCounts[source] || 0) + 1;
             });
         });
@@ -1802,6 +1832,7 @@ function getFiltered() {
 }
 
 function flattenCampaignArtifacts(campaign) {
+    if (!trackerCampaignHasDetails(campaign)) return [];
     return [
         ...(campaign.coverage_artifacts || []),
         ...(campaign.low_trust_artifacts || []),
@@ -1836,10 +1867,9 @@ function getFilteredTrackerCampaigns() {
             const campaignSector = (campaign.sector_tags || [])[0] || "unknown";
             if (campaignSector !== sector) return false;
         }
-        if (type && !(campaign.events || []).some(event => event.event_type === type)) return false;
+        if (type && !(campaign.material_event_types || []).includes(type)) return false;
         if (source) {
-            const hasSource = flattenCampaignArtifacts(campaign).some(artifact => (artifact.source_name || "") === source);
-            if (!hasSource) return false;
+            if (!(campaign.source_names || []).includes(source)) return false;
         }
         if (search) {
             const haystack = [
@@ -1850,7 +1880,7 @@ function getFilteredTrackerCampaigns() {
                 ...(campaign.event_tags || []),
                 ...(campaign.strategy_tags || []),
                 ...(campaign.quality_tags || []),
-                ...flattenCampaignArtifacts(campaign).map(artifact => `${artifact.headline} ${artifact.source_name} ${artifact.evidence_rank}`),
+                campaign.search_text || "",
             ].join(" ").toLowerCase();
             if (!haystack.includes(search)) return false;
         }
@@ -2588,6 +2618,19 @@ function findCampaignEvent(campaign, eventId) {
     return (campaign.events || []).find(event => event.event_id === eventId) || null;
 }
 
+function getCampaignRowArtifact(campaign) {
+    if (campaign.row_artifact) return campaign.row_artifact;
+    const latestEvent = findCampaignEvent(campaign, campaign.latest_material_event_id);
+    const candidateArtifacts = [
+        ...((latestEvent && latestEvent.artifacts) || []),
+        ...((latestEvent && latestEvent.coverage_artifacts) || []),
+        ...(campaign.coverage_artifacts || []),
+        ...(campaign.low_trust_artifacts || []),
+        ...((campaign.events || []).flatMap(event => event.artifacts || [])),
+    ];
+    return candidateArtifacts.find(Boolean) || null;
+}
+
 function buildTrackerArtifactRow(campaign, artifact, options = {}) {
     const {
         bucketLabel = "",
@@ -2709,15 +2752,7 @@ function buildTrackerTimeline(campaign) {
 }
 
 function getCampaignRowSaveId(campaign) {
-    const latestEvent = findCampaignEvent(campaign, campaign.latest_material_event_id);
-    const candidateArtifacts = [
-        ...((latestEvent && latestEvent.artifacts) || []),
-        ...((latestEvent && latestEvent.coverage_artifacts) || []),
-        ...(campaign.coverage_artifacts || []),
-        ...(campaign.low_trust_artifacts || []),
-        ...((campaign.events || []).flatMap(event => event.artifacts || [])),
-    ];
-    const artifact = candidateArtifacts.find(Boolean);
+    const artifact = getCampaignRowArtifact(campaign);
     return artifact ? trackerArtifactReadingListId(campaign, artifact) : "";
 }
 
@@ -2733,6 +2768,13 @@ function buildTrackerHeader() {
             <span class="col-right">Open</span>
         </div>
     `;
+}
+
+function buildTrackerDetailLoading(campaign) {
+    if (campaign.detail_error) {
+        return '<div class="tracker-empty-timeline">Campaign detail could not be loaded. Try reopening the row.</div>';
+    }
+    return '<div class="tracker-empty-timeline">Loading campaign timeline and supporting artifacts…</div>';
 }
 
 function renderTracker() {
@@ -2754,6 +2796,7 @@ function renderTracker() {
 
     container.innerHTML = buildTrackerHeader() + campaigns.map(campaign => {
         const isOpen = expandedCampaigns.has(campaign.campaign_id);
+        const hasDetails = trackerCampaignHasDetails(campaign);
         const latestEventLabel = TRACKER_EVENT_LABELS[campaign.latest_material_event_type] || campaign.latest_material_event_type || "Campaign Update";
         const saveId = getCampaignRowSaveId(campaign);
         const summaryLine = [
@@ -2820,9 +2863,13 @@ function renderTracker() {
                                     </div>
                                 </div>
                             </div>
-                            ${buildTrackerTimeline(campaign)}
-                            ${buildTrackerCoverageBucket("Campaign-Level Coverage", campaign.coverage_artifacts || [], { secondary: true, bucketLabel: "Campaign coverage", campaign })}
-                            ${buildTrackerCoverageBucket("Low-Trust Attachments", campaign.low_trust_artifacts || [], { secondary: true, lowTrust: true, bucketLabel: "Low-trust match", campaign })}
+                            ${hasDetails
+                                ? `
+                                    ${buildTrackerTimeline(campaign)}
+                                    ${buildTrackerCoverageBucket("Campaign-Level Coverage", campaign.coverage_artifacts || [], { secondary: true, bucketLabel: "Campaign coverage", campaign })}
+                                    ${buildTrackerCoverageBucket("Low-Trust Attachments", campaign.low_trust_artifacts || [], { secondary: true, lowTrust: true, bucketLabel: "Low-trust match", campaign })}
+                                `
+                                : buildTrackerDetailLoading(campaign)}
                         </div>
                     </div>
                 ` : ""}
@@ -2884,9 +2931,17 @@ document.getElementById("list-container").addEventListener("click", e => {
     const campaignHeader = e.target.closest(".campaign-group-header");
     if (campaignHeader) {
         const key = campaignHeader.dataset.campaignKey;
+        const willExpand = !expandedCampaigns.has(key);
         if (expandedCampaigns.has(key)) expandedCampaigns.delete(key);
         else expandedCampaigns.add(key);
         render();
+        if (willExpand) {
+            ensureTrackerCampaignDetails(key, true).then(() => {
+                if (expandedCampaigns.has(key)) render();
+            }).catch(() => {
+                if (expandedCampaigns.has(key)) render();
+            });
+        }
     }
 });
 

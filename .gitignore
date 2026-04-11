@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+data/campaign_tracker.json
