@@ -71,6 +71,7 @@
                 <div class="search-wrap">
                     <label class="sr-only" for="search-input">Search reports</label>
                     <input type="text" id="search-input" placeholder="Search activist, target, title, or filing...">
+                    <button id="semantic-toggle" class="search-mode-btn" type="button" title="Toggle semantic search (press Enter to search)">Semantic</button>
                 </div>
                 <div class="toolbar-actions">
                     <label class="sr-only" for="sort-select">Sort results</label>
@@ -82,6 +83,11 @@
                     <div class="view-group shorts-subtabs" id="shorts-subtabs" aria-label="Shorts mode" style="display:none">
                         <button id="shorts-reports" class="view-btn shorts-view-btn active" type="button" aria-pressed="true">Reports</button>
                         <button id="shorts-signals" class="view-btn shorts-view-btn" type="button" aria-pressed="false">Signals</button>
+                    </div>
+                    <div class="view-group signal-tier-tabs" id="signal-tier-tabs" aria-label="Signal tier" style="display:none">
+                        <button class="view-btn signal-tier-btn active" data-tier="high" type="button">High</button>
+                        <button class="view-btn signal-tier-btn" data-tier="medium" type="button">Medium</button>
+                        <button class="view-btn signal-tier-btn" data-tier="all" type="button">All</button>
                     </div>
                     <div class="view-group" aria-label="View mode">
                         <button id="view-list" class="view-btn active" type="button" aria-pressed="true">List</button>
@@ -128,6 +134,16 @@
                     <label class="sr-only" for="campaign-status-filter">Filter tracker by campaign status</label>
                     <select id="campaign-status-filter" aria-label="Filter tracker by campaign status" style="display:none">
                         <option value="">All Campaign Statuses</option>
+                    </select>
+                    <label class="sr-only" for="event-tag-filter">Filter by event tag</label>
+                    <select id="event-tag-filter" aria-label="Filter by event tag" style="display:none">
+                        <option value="">All Event Tags</option>
+                    </select>
+                    <label class="sr-only" for="strategy-tag-filter">Filter by strategy tags</label>
+                    <select id="strategy-tag-filter" aria-label="Filter by strategy tags" multiple size="4" style="display:none"></select>
+                    <label class="sr-only" for="quality-tag-filter">Filter by quality</label>
+                    <select id="quality-tag-filter" aria-label="Filter by quality" style="display:none">
+                        <option value="">All Quality</option>
                     </select>
                     <label class="sr-only" for="recency-filter">Filter by recency</label>
                     <select id="recency-filter" aria-label="Filter by recency">
