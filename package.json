@@ -1,5 +1,9 @@
 {
   "private": true,
+  "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "build:tags": "python3 scripts/enrich_tags.py"
   },
