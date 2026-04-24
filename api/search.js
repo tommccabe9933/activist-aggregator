@@ -25,6 +25,46 @@ async function getDb() {
   return db;
 }
 
+function tokenizeQuery(query) {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function plainSearch(database, query, limit) {
+  const terms = tokenizeQuery(query);
+  if (!terms.length) return [];
+
+  const where = terms.map(() => "content_lc LIKE ?").join(" AND ");
+  const stmt = database.prepare(
+    `SELECT id, content_lc
+     FROM docs_plain
+     WHERE ${where}
+     LIMIT ?`
+  );
+  stmt.bind([...terms.map(term => `%${term}%`), Math.min(limit * 12, 1000)]);
+
+  const results = [];
+  while (stmt.step()) {
+    const row = stmt.getAsObject();
+    let score = 0;
+    for (const term of terms) {
+      const first = row.content_lc.indexOf(term);
+      if (first >= 0) score += 1000 - Math.min(first, 900);
+      score += (row.content_lc.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length * 10;
+    }
+    results.push({ id: row.id, score });
+  }
+  stmt.free();
+
+  return results
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(result => ({ id: result.id, score: Math.round(result.score * 10000) / 10000 }));
+}
+
 export default async function handler(req, res) {
   const { q, k = "50", mode = "fts" } = req.query;
 
@@ -40,7 +80,8 @@ export default async function handler(req, res) {
 
     let results = [];
 
-    // Try FTS5 match query
+    // Try FTS5 match query for older deploy DBs. Current deploy DBs also carry
+    // docs_plain because sql.js does not ship with FTS5 in this runtime.
     try {
       const stmt = database.prepare(
         `SELECT id, bm25(docs) AS score
@@ -56,6 +97,9 @@ export default async function handler(req, res) {
       }
       stmt.free();
     } catch (e) {
+      try {
+        results = plainSearch(database, q, limit);
+      } catch (plainError) {
       // Invalid FTS syntax — try as phrase search
       try {
         const stmt = database.prepare(
@@ -73,6 +117,7 @@ export default async function handler(req, res) {
         stmt.free();
       } catch (e2) {
         results = [];
+      }
       }
     }
 
