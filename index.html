@@ -5,17 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="origin">
     <title>Activist Aggregator</title>
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
     <header class="site-header">
         <div class="masthead">
             <div class="masthead-inner">
                 <div class="brand-lockup">
-                    <span class="brand-mark" aria-hidden="true"></span>
+                    <span class="brand-mark" aria-hidden="true">
+                        <img class="brand-mark-image" src="assets/knight-logo.png" alt="">
+                    </span>
                     <div class="brand-copy">
                         <span class="brand-name">Activist Aggregator</span>
-                        <span class="brand-context">Campaign intelligence system</span>
                     </div>
                 </div>
                 <div class="masthead-note">Tracker · Filings · Presentations · Shorts</div>
@@ -23,9 +24,7 @@
         </div>
         <div class="header-inner">
             <div class="header-copy">
-                <p class="eyebrow">Campaign Intelligence Platform</p>
-                <h1>Monitor activist campaigns with primary-source rigor.</h1>
-                <p class="subtitle">Track campaign chains, filings, decks, company responses, and supporting coverage in one research surface built for event-driven work.</p>
+                <p class="eyebrow">Primary filings, decks, and campaign moves in one screen.</p>
             </div>
             <div class="header-actions">
                 <div class="header-stats" id="header-stats"></div>
@@ -41,28 +40,28 @@
     </header>
 
     <main class="shell">
-        <div class="tab-bar">
-            <button id="tab-presentations" class="tab-btn active" data-tab="presentations">
+        <div class="tab-bar" role="tablist" aria-label="Content sections">
+            <button id="tab-presentations" class="tab-btn active" data-tab="presentations" type="button" role="tab" aria-selected="true" aria-controls="list-container" tabindex="0">
                 <span class="tab-label">Presentations</span>
                 <span class="tab-count" id="tab-count-presentations"></span>
             </button>
-            <button id="tab-announcements" class="tab-btn" data-tab="announcements">
+            <button id="tab-announcements" class="tab-btn" data-tab="announcements" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">Campaign Tracker</span>
                 <span class="tab-count" id="tab-count-announcements"></span>
             </button>
-            <button id="tab-filings" class="tab-btn" data-tab="filings">
+            <button id="tab-filings" class="tab-btn" data-tab="filings" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">Filings</span>
                 <span class="tab-count" id="tab-count-filings"></span>
             </button>
-            <button id="tab-all" class="tab-btn" data-tab="all">
+            <button id="tab-all" class="tab-btn" data-tab="all" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">All</span>
                 <span class="tab-count" id="tab-count-all"></span>
             </button>
-            <button id="tab-shorts" class="tab-btn" data-tab="shorts">
+            <button id="tab-shorts" class="tab-btn" data-tab="shorts" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">Shorts</span>
                 <span class="tab-count" id="tab-count-shorts"></span>
             </button>
-            <button id="tab-guide" class="tab-btn" data-tab="guide">
+            <button id="tab-guide" class="tab-btn" data-tab="guide" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">Guide</span>
             </button>
         </div>
@@ -70,41 +69,40 @@
         <section class="control-panel">
             <div class="toolbar toolbar-primary">
                 <div class="search-wrap">
+                    <label class="sr-only" for="search-input">Search reports</label>
                     <input type="text" id="search-input" placeholder="Search activist, target, title, or filing...">
-                    <button id="semantic-toggle" class="search-mode-btn" type="button" title="Toggle semantic search (press Enter to search)">Semantic</button>
                 </div>
                 <div class="toolbar-actions">
-                    <select id="sort-select">
+                    <label class="sr-only" for="sort-select">Sort results</label>
+                    <select id="sort-select" aria-label="Sort results">
                         <option value="date-desc">Newest First</option>
                         <option value="date-asc">Oldest First</option>
                         <option value="activist" id="sort-by-party">By Activist</option>
                     </select>
                     <div class="view-group shorts-subtabs" id="shorts-subtabs" aria-label="Shorts mode" style="display:none">
-                        <button id="shorts-reports" class="view-btn shorts-view-btn active" type="button">Reports</button>
-                        <button id="shorts-signals" class="view-btn shorts-view-btn" type="button">Signals</button>
-                    </div>
-                    <div class="view-group signal-tier-tabs" id="signal-tier-tabs" aria-label="Signal tier" style="display:none">
-                        <button class="view-btn signal-tier-btn active" data-tier="high" type="button">High</button>
-                        <button class="view-btn signal-tier-btn" data-tier="medium" type="button">Medium</button>
-                        <button class="view-btn signal-tier-btn" data-tier="all" type="button">All</button>
+                        <button id="shorts-reports" class="view-btn shorts-view-btn active" type="button" aria-pressed="true">Reports</button>
+                        <button id="shorts-signals" class="view-btn shorts-view-btn" type="button" aria-pressed="false">Signals</button>
                     </div>
                     <div class="view-group" aria-label="View mode">
-                        <button id="view-list" class="view-btn active">List</button>
-                        <button id="view-campaigns" class="view-btn">Campaigns</button>
+                        <button id="view-list" class="view-btn active" type="button" aria-pressed="true">List</button>
+                        <button id="view-campaigns" class="view-btn" type="button" aria-pressed="false">Campaigns</button>
                     </div>
-                    <button id="toggle-filters" class="toolbar-btn" type="button" aria-expanded="false">Filters</button>
+                    <button id="toggle-filters" class="toolbar-btn" type="button" aria-expanded="false" aria-controls="filter-panel">Filters</button>
                 </div>
             </div>
 
             <div class="toolbar toolbar-secondary collapsed" id="filter-panel">
                 <div class="filter-group">
-                    <select id="activist-filter">
+                    <label class="sr-only" for="activist-filter">Filter by activist</label>
+                    <select id="activist-filter" aria-label="Filter by activist">
                         <option value="">All Activists</option>
                     </select>
-                    <select id="source-filter">
+                    <label class="sr-only" for="source-filter">Filter by source</label>
+                    <select id="source-filter" aria-label="Filter by source">
                         <option value="">All Sources</option>
                     </select>
-                    <select id="type-filter">
+                    <label class="sr-only" for="type-filter">Filter by type</label>
+                    <select id="type-filter" aria-label="Filter by type">
                         <option value="">All Types</option>
                         <option value="activist_campaign_demand">Campaign Demand</option>
                         <option value="activist_stake_disclosure">Stake Disclosure</option>
@@ -114,27 +112,25 @@
                         <option value="company_settlement">Settlement</option>
                         <option value="company_strategic_review">Strategic Review</option>
                     </select>
-                    <select id="sector-filter">
+                    <label class="sr-only" for="sector-filter">Filter by sector</label>
+                    <select id="sector-filter" aria-label="Filter by sector">
                         <option value="">All Sectors</option>
                     </select>
-                    <select id="filing-scope-filter" style="display:none">
+                    <label class="sr-only" for="filing-scope-filter">Filter filings by filer scope</label>
+                    <select id="filing-scope-filter" aria-label="Filter filings by filer scope" style="display:none">
                         <option value="all">All Filers</option>
                         <option value="activist-firms">Activist Firms Only</option>
                     </select>
-                    <select id="filer-role-filter" style="display:none">
+                    <label class="sr-only" for="filer-role-filter">Filter filings by filer role</label>
+                    <select id="filer-role-filter" aria-label="Filter filings by filer role" style="display:none">
                         <option value="">All Filer Roles</option>
                     </select>
-                    <select id="campaign-status-filter" style="display:none">
+                    <label class="sr-only" for="campaign-status-filter">Filter tracker by campaign status</label>
+                    <select id="campaign-status-filter" aria-label="Filter tracker by campaign status" style="display:none">
                         <option value="">All Campaign Statuses</option>
                     </select>
-                    <select id="event-tag-filter" style="display:none">
-                        <option value="">All Event Tags</option>
-                    </select>
-                    <select id="strategy-tag-filter" multiple size="4" style="display:none"></select>
-                    <select id="quality-tag-filter" style="display:none">
-                        <option value="">All Quality</option>
-                    </select>
-                    <select id="recency-filter">
+                    <label class="sr-only" for="recency-filter">Filter by recency</label>
+                    <select id="recency-filter" aria-label="Filter by recency">
                         <option value="">Any Time</option>
                         <option value="7d">Last 7 Days</option>
                         <option value="30d">Last 30 Days</option>
@@ -146,7 +142,7 @@
         </section>
 
         <div class="stats-bar" id="stats-bar"></div>
-        <div class="list-container" id="list-container"></div>
+        <div class="list-container" id="list-container" role="tabpanel" tabindex="-1"></div>
     </main>
 
     <aside class="reading-list-sidebar" id="reading-list-sidebar" aria-label="Reading list">
@@ -179,6 +175,6 @@
     <div class="rl-overlay" id="rl-overlay"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="app.js?v=24"></script>
+    <script src="app.js?v=18"></script>
 </body>
 </html>
