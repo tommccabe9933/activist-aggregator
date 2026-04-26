@@ -416,7 +416,7 @@ const ReadingList = {
             const target = getDisplayTarget(d);
             const title = getDisplayTitle(d);
             const link = pdfUrl(d);
-            const linkLabel = d.pdf_filename ? "PDF" : "Link";
+            const linkLabel = hasPdfAccess(d) ? "PDF" : "Link";
             return `
                 <div class="rl-item" data-id="${escapeHtml(d.id)}">
                     <div class="rl-item-color" style="background:${activistColor(d.activist)}"></div>
@@ -786,8 +786,13 @@ function pdfAssetPath(d) {
 }
 
 function pdfUrl(d) {
+    if (DEPLOY_MODE && d.blob_url) return d.blob_url;
     if (!DEPLOY_MODE && d.pdf_filename) return pdfAssetPath(d);
-    return d.original_url || "#";
+    return d.original_url || d.blob_url || "#";
+}
+
+function hasPdfAccess(d) {
+    return Boolean(d.pdf_filename || d.blob_url);
 }
 
 function buildAssetPath(suffix) {
@@ -2062,7 +2067,7 @@ function renderSaveButton(id, withLabel = false) {
 function buildShortsDetailCard(d) {
     const title = getDisplayTitle(d);
     const target = getDisplayTarget(d);
-    const primaryLabel = d.pdf_filename ? "Open PDF" : "View Source";
+    const primaryLabel = hasPdfAccess(d) ? "Open PDF" : "View Source";
     const primaryLink = pdfUrl(d);
     const sourcePageUrl = d.pdf_filename
         ? (d.source_page_url || d.original_url || "")
@@ -2136,7 +2141,7 @@ function buildDetailCard(d) {
     const sourceLabel = SOURCE_LABELS[d.source] || d.source || "Unknown";
     const category = TYPE_LABELS[d.announcement_type] || "";
     const contentType = CONTENT_TYPE_LABELS[d.content_type] || "Filing";
-    const primaryLabel = d.pdf_filename ? "Open PDF" : "View Source";
+    const primaryLabel = hasPdfAccess(d) ? "Open PDF" : "View Source";
     const primaryLink = pdfUrl(d);
     const eventTags = renderChipSet(d.event_tags || [], eventTagLabel, "detail-chip");
     const strategyTags = renderChipSet(d.strategy_tags || [], strategyTagLabel, "detail-chip");
@@ -2376,7 +2381,7 @@ function buildRowHtml(d) {
     const marker = getMarkerLabel(d);
     const isExpanded = expandedId === d.id;
     const action = activeTab === "shorts"
-        ? `<a class="row-action-btn${d.pdf_filename ? " primary" : ""}" href="${escapeHtml(pdfUrl(d))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${d.pdf_filename ? "Open" : "View"}</a>`
+        ? `<a class="row-action-btn${hasPdfAccess(d) ? " primary" : ""}" href="${escapeHtml(pdfUrl(d))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${hasPdfAccess(d) ? "Open" : "View"}</a>`
         : (activeTab === "presentations" && d.pdf_filename
             ? `<a class="row-action-btn primary" href="${escapeHtml(pdfUrl(d))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Open</a>`
             : (activeTab === "all" && d.pdf_filename
@@ -2548,7 +2553,7 @@ function renderCampaigns() {
                     <span class="row-marker">${markerChip(marker)}</span>
                     <span class="row-date">${escapeHtml(formatDate(d.date))}</span>
                     <span class="row-actions">
-                        <a class="row-action-btn${d.pdf_filename ? " primary" : ""}" href="${escapeHtml(pdfUrl(d))}" target="_blank" rel="noopener noreferrer">${d.pdf_filename ? "Open" : "View"}</a>
+                        <a class="row-action-btn${hasPdfAccess(d) ? " primary" : ""}" href="${escapeHtml(pdfUrl(d))}" target="_blank" rel="noopener noreferrer">${hasPdfAccess(d) ? "Open" : "View"}</a>
                         ${renderSaveButton(d.id)}
                     </span>
                 </div>
@@ -2580,10 +2585,13 @@ function renderCampaigns() {
 }
 
 function trackerArtifactUrl(artifact) {
+    if (DEPLOY_MODE && artifact.blob_url) {
+        return artifact.blob_url;
+    }
     if (!DEPLOY_MODE && artifact.pdf_filename) {
         return buildAssetPath(`pdfs/${encodeURIComponent(artifact.pdf_filename)}`);
     }
-    return artifact.source_url || "#";
+    return artifact.source_url || artifact.blob_url || "#";
 }
 
 function trackerArtifactReadingListId(campaign, artifact) {
@@ -2643,7 +2651,7 @@ function buildTrackerArtifactRow(campaign, artifact, options = {}) {
     const relatedChip = relatedCount ? `<span class="detail-chip tracker-related-chip">+${relatedCount} related</span>` : "";
     const readingListId = trackerArtifactReadingListId(campaign, artifact);
     const saveButton = readingListId ? renderSaveButton(readingListId) : "";
-    const openLabel = !DEPLOY_MODE && artifact.pdf_filename ? "Open PDF" : "Open";
+    const openLabel = (DEPLOY_MODE && artifact.blob_url) || (!DEPLOY_MODE && artifact.pdf_filename) ? "Open PDF" : "Open";
     const artifactMeta = [
         SOURCE_LABELS[artifact.source_name] || artifact.source_name || "Unknown source",
         artifact.artifact_type ? artifact.artifact_type.replace(/_/g, " ") : "",
@@ -3120,9 +3128,10 @@ document.getElementById("rl-email-send").addEventListener("click", () => {
 
     const subject = `Activist Aggregator Reading List (${items.length} items)`;
     const bodyLines = items.map((d, i) => {
-        const url = d.pdf_filename
-            ? new URL(pdfAssetPath(d), window.location.href).href
-            : (d.original_url || "");
+        const routedUrl = pdfUrl(d);
+        const url = routedUrl && routedUrl !== "#"
+            ? new URL(routedUrl, window.location.href).href
+            : "";
         return `${i + 1}. ${getDisplayActivist(d)} / ${getDisplayTarget(d)}\n${getDisplayTitle(d)}\n${formatDate(d.date)}\n${url}`;
     });
     const body = `Reading list digest\n\n${bodyLines.join("\n\n")}`;
@@ -3157,7 +3166,20 @@ document.getElementById("rl-download-btn").addEventListener("click", async () =>
             btn.textContent = `Downloading ${fetched}/${items.length}...`;
             const label = `${getDisplayActivist(d)} / ${getDisplayTarget(d)} | ${getDisplayTitle(d)} | ${formatDate(d.date)}`;
 
-            if (!DEPLOY_MODE && d.pdf_filename) {
+            if (d.blob_url) {
+                // Blob URLs are public and CORS-friendly, so deployed ZIPs can fetch them directly.
+                try {
+                    const resp = await fetch(d.blob_url);
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    const blob = await resp.blob();
+                    const safeName = (d.title || d.id || "document").replace(/[^a-zA-Z0-9_\- ]/g, "").substring(0, 80);
+                    const filename = d.pdf_filename || `${safeName}.pdf`;
+                    zip.file(filename, blob);
+                    manifestLines.push(`${label}\nFile: ${filename}\nStatus: downloaded (Blob)\nSource: ${d.blob_url}\n`);
+                } catch (err) {
+                    manifestLines.push(`${label}\nLink: ${d.blob_url}\nStatus: failed (${err.message})\n`);
+                }
+            } else if (!DEPLOY_MODE && d.pdf_filename) {
                 // Local mode: fetch from local PDF cache
                 try {
                     const resp = await fetch(pdfAssetPath(d));
