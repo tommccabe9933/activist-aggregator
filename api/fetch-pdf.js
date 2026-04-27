@@ -62,9 +62,13 @@ export default async function handler(req, res) {
   }
 
   try {
+    // SEC EDGAR's fair-access policy (https://www.sec.gov/os/accessing-edgar-data)
+    // blocks User-Agents that don't include a contact email. Without this header,
+    // every SEC.gov fetch returns 403/404 — root cause of every "Status: failed"
+    // line on SEC URLs in the reading-list ZIP manifest.
     const upstream = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; ActivistAggregator/1.0)",
+        "User-Agent": "Mozilla/5.0 ActivistAggregator/1.0 (contact@activistaggregator.app)",
         "Accept": "text/html,application/pdf,*/*",
       },
       redirect: "follow",

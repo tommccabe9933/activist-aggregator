@@ -244,6 +244,44 @@ const LOGO_NAME_OVERRIDES = {
     "Multiple": "",
 };
 
+// SEC EDGAR returns individual filer names as "LASTNAME FIRSTNAME MIDDLENAME".
+// We can't safely auto-flip — names like "Third Point" or "HM Treasury" lack
+// firm suffixes and would mis-detect as people. So override explicit cases.
+// Add new entries as you spot them. Long-term fix belongs in the scraper.
+const ACTIVIST_NAME_OVERRIDES = {
+    "Su Eric Horn": "Eric Horn Su",
+    "Radoff Bradley Louis": "Bradley Louis Radoff",
+    "STILWELL JOSEPH": "Joseph Stilwell",
+    "BAKER JULIAN": "Julian Baker",
+    "Musk Elon": "Elon Musk",
+    "DILLER BARRY": "Barry Diller",
+    "DOUGLAS KEVIN": "Kevin Douglas",
+    "HARRIS JOSHUA": "Joshua Harris",
+    "ROBOTTI ROBERT": "Robert Robotti",
+    "DEASON DARWIN": "Darwin Deason",
+    "SINGER KAREN": "Karen Singer",
+    "Dolby Dagmar": "Dagmar Dolby",
+    "EBRAHIMI FARHAD FRED": "Farhad Fred Ebrahimi",
+    "Smith Denver Johnson": "Denver Johnson Smith",
+    "Karkus Ted William": "Ted William Karkus",
+    "Herzfeld Erik Mervin": "Erik Mervin Herzfeld",
+    "Waite Carol Farmer": "Carol Farmer Waite",
+    "WILLIAMS RANDA DUNCAN": "Randa Duncan Williams",
+    "HELU CARLOS SLIM": "Carlos Slim Helu",
+    "Hsieh Anthony Li": "Anthony Li Hsieh",
+    "STAD MARC": "Marc Stad",
+    "RAZIN SHELDON": "Sheldon Razin",
+    "Cooperstone Elliot": "Elliot Cooperstone",
+    "Rosenbaum Paul": "Paul Rosenbaum",
+    "Seaberg Karen": "Karen Seaberg",
+    "Milikowsky Nathan": "Nathan Milikowsky",
+    "Economou George": "George Economou",
+    "Otto Alexander": "Alexander Otto",
+    "Zyuzin Igor": "Igor Zyuzin",
+    "Kahli Beat": "Beat Kahli",
+    "Barta Jan": "Jan Barta",
+};
+
 const TAB_DEFAULT_VIEW = {
     guide: "guide",
     all: "list",
@@ -276,6 +314,10 @@ let activeSignalTier = TAB_DEFAULT_SIGNAL[activeTab];
 let viewMode = TAB_DEFAULT_VIEW[activeTab];
 let expandedId = null;
 let expandedCampaigns = new Set();
+const TRACKER_ROW_HEIGHT = 79;
+const TRACKER_HYDRATE_MARGIN = "800px 0px";
+let trackerObserver = null;
+let trackerCampaignsById = new Map();
 let focusedIndex = -1;
 let urlPinnedView = false;
 let tickerCompanyMap = new Map();
@@ -292,6 +334,31 @@ let ftsResultIds = null;        // ordered array of IDs from FTS search, or null
 // Deploy mode state
 let DEPLOY_MODE = false;
 let deployMeta = null;
+
+// Perf debug logs: opt-in via ?debug=1 in URL or localStorage["activist-debug"]=1.
+// Was unconditional console.debug on every render — quiet in normal use, easy to
+// toggle on when diagnosing slowness.
+const DEBUG_MODE = (() => {
+    try {
+        const params = new URLSearchParams(location.search);
+        if (params.has("debug")) return true;
+        return localStorage.getItem("activist-debug") === "1";
+    } catch {
+        return false;
+    }
+})();
+
+// Filter dropdown indexes — computed once after allData is loaded.
+// allData/trackerData are immutable post-load, so dropdown contents are too.
+// Without this cache, each tab switch did 9 × full-data passes + 13k DOM appends
+// for the activist dropdown alone (3074ms freeze). Memoized: <5ms.
+let filterIndexCache = null;
+
+// Logo manifest: { "Apple Inc": "apple-inc-3a4f.png", ... }
+// Pre-fetched at build time by scripts/prefetch_logos.py. Lets us serve the
+// top ~1000 brand logos as same-origin static assets instead of hitting
+// logo.dev's CDN per row. Long-tail names still fall back to logo.dev.
+let logoManifest = null;
 
 const SHORTS_TAB_OPTIONS = new Set(["reports", "signals"]);
 
@@ -549,7 +616,88 @@ function buildAccessionTargetMap(data) {
 }
 
 function getActivistRecords() {
+    if (filterIndexCache) return filterIndexCache.activistRecords;
     return allData.filter(d => !isShortRecord(d));
+}
+
+function rebuildFilterIndexes() {
+    const t0 = performance.now();
+    const activistRecords = allData.filter(d => !isShortRecord(d));
+    const shortsRecords = allData.filter(d => isShortRecord(d));
+    const filingRecords = activistRecords.filter(d => d.content_type === "filing");
+    const campaigns = trackerData.campaigns || [];
+
+    function tally(items, getter) {
+        const counts = Object.create(null);
+        for (const item of items) {
+            const value = getter(item);
+            if (Array.isArray(value)) {
+                for (const v of value) if (v) counts[v] = (counts[v] || 0) + 1;
+            } else if (value) {
+                counts[value] = (counts[value] || 0) + 1;
+            }
+        }
+        return counts;
+    }
+
+    function uniqueSorted(items, getter) {
+        return [...new Set(items.map(getter).filter(Boolean))].sort();
+    }
+
+    // Pre-compute filer roles for each filing record (the per-row regex work
+    // is what made updateFilerRoleFilter cost 858ms on every tab switch).
+    const filerRoleCounts = Object.create(null);
+    for (const d of filingRecords) {
+        const role = getFilerRole(d);
+        filerRoleCounts[role] = (filerRoleCounts[role] || 0) + 1;
+    }
+
+    // Header stat counts: derived from allData (immutable post-load), so cache
+    // once instead of recomputing on every updateStats() call (was iterating
+    // 63k records 3 times per render on filter/tab/search changes).
+    const totalActivistCount = new Set(activistRecords.map(d => d.activist).filter(Boolean)).size;
+    const totalShortPublisherCount = new Set(shortsRecords.map(getShortPublisher).filter(Boolean)).size;
+
+    filterIndexCache = {
+        activistRecords,
+        shortsRecords,
+        filingRecords,
+        campaigns,
+        totalActivistCount,
+        totalShortPublisherCount,
+        // Activist dropdown — 12.9k entries on prod, two variants
+        activistsAnnouncements: uniqueSorted(campaigns, c => c.canonical_activist),
+        activistsDocs: uniqueSorted(
+            activistRecords.filter(d => d.source !== "google_news"),
+            d => d.activist
+        ),
+        // Sectors
+        sectorsAnnouncements: tally(campaigns, c => (c.sector_tags || [])[0] || "unknown"),
+        sectorsDocs: tally(activistRecords, d => (d.sector_tags || [])[0] || "unknown"),
+        // Type counts (filings tab)
+        formTypesFilings: tally(activistRecords, d => d.form_type || "Unknown"),
+        // Tracker-only filters
+        trackerEventTypeCounts: tally(campaigns, c => c.material_event_types || []),
+        trackerStatusCounts: tally(campaigns, c => c.campaign_status || "provisional"),
+        trackerEventTagCounts: tally(campaigns, c => c.event_tags || []),
+        trackerStrategyTagCounts: tally(campaigns, c => c.strategy_tags || []),
+        trackerQualityTagCounts: tally(campaigns, c => c.quality_tags || []),
+        trackerSourceCounts: tally(campaigns, c => c.source_names || []),
+        // Filings-tab tag counts
+        filingEventTagCounts: tally(filingRecords, d => d.event_tags || []),
+        filingStrategyTagCounts: tally(filingRecords, d => d.strategy_tags || []),
+        filingQualityTagCounts: tally(filingRecords, d => d.quality_tags || []),
+        filerRoleCounts,
+    };
+    if (DEBUG_MODE) console.debug(`[perf] rebuildFilterIndexes: ${(performance.now() - t0).toFixed(0)}ms`);
+}
+
+// Build an <option> element. Using DOM API auto-escapes text; safer than innerHTML.
+function makeOption(value, label) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    return opt;
 }
 
 function inferFundWebsiteTarget(d) {
@@ -618,6 +766,9 @@ function getDisplayTitle(d) {
 function getDisplayActivist(d) {
     if (isShortRecord(d)) return getShortPublisher(d);
     const activist = d.activist || "";
+    if (Object.prototype.hasOwnProperty.call(ACTIVIST_NAME_OVERRIDES, activist)) {
+        return ACTIVIST_NAME_OVERRIDES[activist];
+    }
     const wordCount = activist.trim().split(/\s+/).filter(Boolean).length;
     if (wordCount > 5 || /\b(surges?|jumps?|pushes?|demands?|builds?|exits?|reports?|faces?|says?|aims?)\b/i.test(activist)) {
         return SOURCE_LABELS[d.source] || "News";
@@ -678,6 +829,8 @@ function getLogoLookupName(d) {
     let cleaned = target;
     cleaned = cleaned.replace(/\s*\/[A-Z]{2,}(?=\s|\(|$).*$/i, "").trim();
     cleaned = cleaned.replace(/\s*\((?:[A-Z]+:)?[A-Z0-9]{1,5}(?:\s*,\s*[A-Z0-9]{1,5})*\)\s*$/g, "").trim();
+    // Source data sometimes has unmatched parens like "REPUBLIC FIRST BANCORP INC (FRBK"
+    cleaned = cleaned.replace(/\s*\([A-Z0-9 ,&.\-]{1,30}$/g, "").trim();
     cleaned = cleaned.replace(/\bPLC\b/gi, "plc");
     cleaned = cleaned.replace(/\bINC\b/gi, "Inc");
     cleaned = cleaned.replace(/\bCORP\b/gi, "Corp");
@@ -749,10 +902,28 @@ function getLogoUrl(d) {
     return `https://img.logo.dev/name/${encodeURIComponent(lookup)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`;
 }
 
+function logoDevUrl(name) {
+    return `https://img.logo.dev/name/${encodeURIComponent(name)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`;
+}
+
 function renderLogoSlot(d) {
-    const candidates = isHighConfidenceLogoTarget(d)
-        ? getLogoLookupCandidates(d).map(name => `https://img.logo.dev/name/${encodeURIComponent(name)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`)
-        : [];
+    if (!isHighConfidenceLogoTarget(d)) {
+        return '<span class="target-logo-slot is-empty" aria-hidden="true"></span>';
+    }
+    const names = getLogoLookupCandidates(d);
+    const candidates = [];
+    // Prefer same-origin static logos (no external request per row, no logo.dev cookies/tracking).
+    if (logoManifest) {
+        for (const name of names) {
+            const filename = logoManifest[name];
+            if (filename) {
+                candidates.push(`assets/logos/${encodeURIComponent(filename)}`);
+                break;
+            }
+        }
+    }
+    // Logo.dev fallbacks cover long-tail names not in the prefetch manifest.
+    for (const name of names) candidates.push(logoDevUrl(name));
     if (!candidates.length) return '<span class="target-logo-slot is-empty" aria-hidden="true"></span>';
     return `
         <span class="target-logo-slot">
@@ -1020,6 +1191,8 @@ async function ensureTrackerData(background = false) {
             trackerData = fetchedTrackerData || { campaigns: [], counts: {} };
             trackerLoaded = true;
             trackerLoadPromise = null;
+            // Refresh the filter index cache now that tracker campaigns are known.
+            rebuildFilterIndexes();
             updateTabCounts();
             if (activeTab === "announcements") {
                 updateActivistFilter();
@@ -1093,6 +1266,9 @@ function getMarkerLabel(d) {
     if (activeTab === "announcements") return TYPE_LABELS[d.announcement_type] || "News";
     if (activeTab === "all") return TYPE_LABELS[d.announcement_type] || CONTENT_TYPE_LABELS[d.content_type] || "Item";
     if (activeTab === "filings" && viewMode === "list") return SOURCE_LABELS[d.source] || "Filing";
+    if (activeTab === "presentations") {
+        return SOURCE_LABELS[d.source] || CONTENT_TYPE_LABELS[d.content_type] || "Presentation";
+    }
     return "";
 }
 
@@ -1122,9 +1298,17 @@ async function loadData() {
         container.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Loading data...</p></div>';
     }
 
+    // Kick off the logo manifest fetch alongside the data fetches. It's a small
+    // file (~57KB) and renderLogoSlot tolerates it being null until ready.
+    const logoManifestPromise = fetch("assets/logos/manifest.json")
+        .then(r => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then(json => { if (json) logoManifest = json; });
+
     try {
         const activistData = await fetchJsonFile("data.json");
         const shortsData = await fetchJsonFile("shorts/shorts.json");
+        await logoManifestPromise; // Settle before first render so initial logos use static paths.
         if (!activistData && !shortsData) {
             throw new Error("No activist or shorts dataset found from this server root.");
         }
@@ -1138,8 +1322,10 @@ async function loadData() {
         accessionTargetMap = buildAccessionTargetMap(allData);
         performance.mark("data-load-end");
         performance.measure("data-load", "data-load-start", "data-load-end");
-        console.debug(`[perf] data-load: ${performance.getEntriesByName("data-load")[0].duration.toFixed(0)}ms`);
+        if (DEBUG_MODE) console.debug(`[perf] data-load: ${performance.getEntriesByName("data-load")[0].duration.toFixed(0)}ms`);
+        rebuildFilterIndexes();
         populateFilters();
+        ensureTrackerData(true);  // fire-and-forget; refreshes tab count + UI when ready
         updateTabCounts();
         readUrlState();
         render();
@@ -1167,29 +1353,26 @@ function populateFilters() {
     updateQualityTagFilter();
     performance.mark("filters-end");
     performance.measure("populate-filters", "filters-start", "filters-end");
-    console.debug(`[perf] populate-filters: ${performance.getEntriesByName("populate-filters").pop().duration.toFixed(0)}ms`);
+    if (DEBUG_MODE) console.debug(`[perf] populate-filters: ${performance.getEntriesByName("populate-filters").pop().duration.toFixed(0)}ms`);
 }
 
 function updateActivistFilter() {
     const activistSelect = document.getElementById("activist-filter");
     const currentVal = activistSelect.value;
-    while (activistSelect.options.length > 1) activistSelect.remove(1);
 
-    const activists = activeTab === "announcements"
-        ? [...new Set((trackerData.campaigns || []).map(c => c.canonical_activist).filter(Boolean))].sort()
-        : [...new Set(
-            getActivistRecords()
-                .filter(d => d.source !== "google_news")
-                .map(d => d.activist)
-                .filter(Boolean)
-        )].sort();
+    // Read from cache (rebuilt only on data load). Build a detached fragment
+    // so options land in the DOM with one mutation, not 13k.
+    const activists = filterIndexCache
+        ? (activeTab === "announcements"
+            ? filterIndexCache.activistsAnnouncements
+            : filterIndexCache.activistsDocs)
+        : [];
 
-    activists.forEach(a => {
-        const opt = document.createElement("option");
-        opt.value = a;
-        opt.textContent = a;
-        activistSelect.appendChild(opt);
-    });
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(makeOption("", "All Activists"));
+    for (const a of activists) fragment.appendChild(makeOption(a, a));
+    activistSelect.replaceChildren(fragment);
+
     if (currentVal) {
         activistSelect.value = currentVal;
         if (activistSelect.value !== currentVal) activistSelect.value = "";
@@ -1275,23 +1458,19 @@ function updateTypeFilter() {
 function updateFilerRoleFilter() {
     const roleSelect = document.getElementById("filer-role-filter");
     const currentVal = roleSelect.value;
-    while (roleSelect.options.length > 1) roleSelect.remove(1);
-    if (activeTab === "filings") {
-        const roleCounts = {};
-        getActivistRecords()
-            .filter(d => d.content_type === "filing")
-            .forEach(d => {
-                const role = getFilerRole(d);
-                roleCounts[role] = (roleCounts[role] || 0) + 1;
-            });
-        Object.keys(FILER_ROLE_LABELS).forEach(role => {
-            if (!roleCounts[role]) return;
-            const opt = document.createElement("option");
-            opt.value = role;
-            opt.textContent = `${FILER_ROLE_LABELS[role]} (${roleCounts[role]})`;
-            roleSelect.appendChild(opt);
-        });
+
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(makeOption("", "All Filer Roles"));
+    if (activeTab === "filings" && filterIndexCache) {
+        const roleCounts = filterIndexCache.filerRoleCounts;
+        for (const role of Object.keys(FILER_ROLE_LABELS)) {
+            const count = roleCounts[role];
+            if (!count) continue;
+            fragment.appendChild(makeOption(role, `${FILER_ROLE_LABELS[role]} (${count})`));
+        }
     }
+    roleSelect.replaceChildren(fragment);
+
     if (currentVal) {
         roleSelect.value = currentVal;
         if (roleSelect.value !== currentVal) roleSelect.value = "";
@@ -1970,7 +2149,8 @@ function updateSemanticUI() {
 function updateStats(filtered) {
     if (activeTab === "guide") {
         document.getElementById("stats-bar").innerHTML = "";
-        document.getElementById("header-stats").textContent = `${allData.length} records · ${new Set(allData.filter(d => !isShortRecord(d)).map(d => d.activist).filter(Boolean)).size} activists`;
+        const activistCount = filterIndexCache ? filterIndexCache.totalActivistCount : 0;
+        document.getElementById("header-stats").textContent = `${fmtNum(allData.length)} records · ${fmtNum(activistCount)} activists`;
         return;
     }
     if (activeTab === "announcements") {
@@ -1982,16 +2162,16 @@ function updateStats(filtered) {
         const provisional = campaigns.filter(c => c.provisional).length;
 
         document.getElementById("stats-bar").innerHTML = [
-            `<span class="stat-item"><strong>${campaigns.length}</strong> campaigns</span>`,
-            `<span class="stat-item"><strong>${activists}</strong> activists</span>`,
-            `<span class="stat-item"><strong>${targets}</strong> targets</span>`,
-            `<span class="stat-item"><strong>${primaryArtifacts}</strong> primary artifacts</span>`,
-            `<span class="stat-item"><strong>${coverage}</strong> related articles</span>`,
-            `<span class="stat-item"><strong>${provisional}</strong> provisional</span>`,
+            `<span class="stat-item"><strong>${fmtNum(campaigns.length)}</strong> campaigns</span>`,
+            `<span class="stat-item"><strong>${fmtNum(activists)}</strong> activists</span>`,
+            `<span class="stat-item"><strong>${fmtNum(targets)}</strong> targets</span>`,
+            `<span class="stat-item"><strong>${fmtNum(primaryArtifacts)}</strong> primary artifacts</span>`,
+            `<span class="stat-item"><strong>${fmtNum(coverage)}</strong> related articles</span>`,
+            `<span class="stat-item"><strong>${fmtNum(provisional)}</strong> provisional</span>`,
         ].join("");
 
         document.getElementById("header-stats").textContent =
-            `${(trackerData.counts.campaigns || campaigns.length).toLocaleString()} campaigns · ${(trackerData.counts.confirmed || 0).toLocaleString()} confirmed`;
+            `${fmtNum(trackerData.counts.campaigns || campaigns.length)} campaigns · ${fmtNum(trackerData.counts.confirmed || 0)} confirmed`;
         return;
     }
     const uniqueActivists = new Set(filtered.map(d => activeTab === "shorts" ? getShortPublisher(d) : d.activist).filter(Boolean)).size;
@@ -2001,28 +2181,90 @@ function updateStats(filtered) {
     const statLabel = activeTab === "shorts" ? "publishers" : "activists";
     const extraShortsStats = activeTab === "shorts"
         ? [
-            `<span class="stat-item"><strong>${filtered.filter(d => d.validation_state === "validated").length}</strong> validated</span>`,
-            `<span class="stat-item"><strong>${filtered.filter(d => d.render_status === "rendered_pdf").length}</strong> rendered PDFs</span>`,
+            `<span class="stat-item"><strong>${fmtNum(filtered.filter(d => d.validation_state === "validated").length)}</strong> validated</span>`,
+            `<span class="stat-item"><strong>${fmtNum(filtered.filter(d => d.render_status === "rendered_pdf").length)}</strong> rendered PDFs</span>`,
         ]
         : [];
     const statItems = [
-        `<span class="stat-item"><strong>${filtered.length}</strong> results</span>`,
-        `<span class="stat-item"><strong>${uniqueActivists}</strong> ${statLabel}</span>`,
-        `<span class="stat-item"><strong>${uniqueTargets}</strong> targets</span>`,
+        `<span class="stat-item"><strong>${fmtNum(filtered.length)}</strong> results</span>`,
+        `<span class="stat-item"><strong>${fmtNum(uniqueActivists)}</strong> ${statLabel}</span>`,
+        `<span class="stat-item"><strong>${fmtNum(uniqueTargets)}</strong> targets</span>`,
     ];
     if (!DEPLOY_MODE && pdfCount > 0) {
-        statItems.push(`<span class="stat-item"><strong>${pdfCount}</strong> local PDFs</span>`);
+        statItems.push(`<span class="stat-item"><strong>${fmtNum(pdfCount)}</strong> local PDFs</span>`);
     }
     statItems.push(...extraShortsStats);
     bar.innerHTML = statItems.join("");
 
-    const activistCount = new Set(getActivistRecords().map(d => d.activist).filter(Boolean)).size;
-    const shortPublisherCount = new Set(allData.filter(isShortRecord).map(getShortPublisher).filter(Boolean)).size;
+    // Read cached totals from rebuildFilterIndexes — these are over allData and
+    // never change. Was 2x Set() of 63k records on every render.
+    const activistCount = filterIndexCache ? filterIndexCache.totalActivistCount : 0;
+    const shortPublisherCount = filterIndexCache ? filterIndexCache.totalShortPublisherCount : 0;
     const headerStats = document.getElementById("header-stats");
     headerStats.textContent = activeTab === "shorts"
-        ? `${allData.length} records · ${shortPublisherCount} short publishers`
-        : `${allData.length} records · ${activistCount} activists`;
+        ? `${fmtNum(allData.length)} records · ${fmtNum(shortPublisherCount)} short publishers`
+        : `${fmtNum(allData.length)} records · ${fmtNum(activistCount)} activists`;
 }
+
+// Consistent number formatting across stats bars and header.
+// Without this, the page mixed "63519 RECORDS" with "62,809" tab counts.
+function fmtNum(n) {
+    return Number(n || 0).toLocaleString("en-US");
+}
+
+// Build a richer empty state with a "Clear filters" action.
+// Reads current filter state to hint at what's filtered out.
+function buildEmptyStateHtml(headline) {
+    const search = (document.getElementById("search-input") || {}).value || "";
+    const activist = (document.getElementById("activist-filter") || {}).value || "";
+    const source = (document.getElementById("source-filter") || {}).value || "";
+    const sector = (document.getElementById("sector-filter") || {}).value || "";
+    const recency = (document.getElementById("recency-filter") || {}).value || "";
+
+    const activeFilters = [];
+    if (search) activeFilters.push(`search "${escapeHtml(search)}"`);
+    if (activist) activeFilters.push(`activist "${escapeHtml(activist)}"`);
+    if (source) activeFilters.push(`source "${escapeHtml(source)}"`);
+    if (sector) activeFilters.push(`sector "${escapeHtml(sector)}"`);
+    if (recency) activeFilters.push(`recency ${escapeHtml(recency)}`);
+
+    const filterHint = activeFilters.length
+        ? `<p class="empty-state-hint">Active filters: ${activeFilters.join(" · ")}</p>`
+        : `<p class="empty-state-hint">Try a different tab, or remove filters to broaden the search.</p>`;
+
+    const showClearBtn = activeFilters.length > 0;
+    return `
+        <div class="empty-state">
+            <p class="empty-state-headline">${escapeHtml(headline || "No results match your filters.")}</p>
+            ${filterHint}
+            ${showClearBtn ? `<button id="empty-state-clear" type="button" class="empty-state-btn">Clear filters</button>` : ""}
+        </div>
+    `;
+}
+
+function clearAllFilters() {
+    const inputs = [
+        "search-input", "activist-filter", "source-filter", "type-filter",
+        "sector-filter", "filing-scope-filter", "filer-role-filter",
+        "campaign-status-filter", "event-tag-filter", "quality-tag-filter",
+        "recency-filter",
+    ];
+    for (const id of inputs) {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+    }
+    const strategySel = document.getElementById("strategy-tag-filter");
+    if (strategySel) Array.from(strategySel.options).forEach(o => { o.selected = false; });
+    if (typeof semanticResultIds !== "undefined") semanticResultIds = null;
+    if (typeof ftsResultIds !== "undefined") ftsResultIds = null;
+    semanticQuery = "";
+    render();
+}
+
+// Delegate handler for the Clear-filters button inside empty states.
+document.addEventListener("click", e => {
+    if (e.target && e.target.id === "empty-state-clear") clearAllFilters();
+});
 
 function bookmarkSvg(filled) {
     return `<svg width="14" height="14" viewBox="0 0 16 16" fill="${filled ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.5"><path d="M3 2h10a1 1 0 011 1v11l-6-3-6 3V3a1 1 0 011-1z"/></svg>`;
@@ -2447,7 +2689,7 @@ function renderList() {
     updateStats(filtered);
 
     if (!filtered.length) {
-        container.innerHTML = '<div class="empty-state">No results match your filters.</div>';
+        container.innerHTML = buildEmptyStateHtml("No results match your filters.");
         lastFiltered = [];
         renderedCount = 0;
         return;
@@ -2470,7 +2712,7 @@ function renderList() {
     }
     performance.mark("render-list-end");
     performance.measure("render-list", "render-list-start", "render-list-end");
-    console.debug(`[perf] render-list: ${performance.getEntriesByName("render-list").pop().duration.toFixed(0)}ms (${filtered.length} total, ${renderedCount} rendered)`);
+    if (DEBUG_MODE) console.debug(`[perf] render-list: ${performance.getEntriesByName("render-list").pop().duration.toFixed(0)}ms (${filtered.length} total, ${renderedCount} rendered)`);
 }
 
 function buildCampaigns(filtered) {
@@ -2531,7 +2773,7 @@ function renderCampaigns() {
     updateStats(filtered);
 
     if (!campaigns.length) {
-        container.innerHTML = '<div class="empty-state">No campaigns match your filters.</div>';
+        container.innerHTML = buildEmptyStateHtml("No campaigns match your filters.");
         return;
     }
 
@@ -2573,7 +2815,7 @@ function renderCampaigns() {
                     </span>
                     <span class="campaign-meta">${escapeHtml(formatDate(c.latestDate))}</span>
                     <span class="campaign-range">${escapeHtml(dateRange)}</span>
-                    <span class="campaign-count">${c.docs.length} docs</span>
+                    <span class="campaign-count">${c.docs.length} ${c.docs.length === 1 ? "doc" : "docs"}</span>
                     <span class="campaign-actions">
                         <span class="campaign-toggle" aria-hidden="true">${isOpen ? "−" : "+"}</span>
                     </span>
@@ -2785,105 +3027,144 @@ function buildTrackerDetailLoading(campaign) {
     return '<div class="tracker-empty-timeline">Loading campaign timeline and supporting artifacts…</div>';
 }
 
+function buildTrackerRowMarkup(campaign) {
+    const isOpen = expandedCampaigns.has(campaign.campaign_id);
+    const hasDetails = trackerCampaignHasDetails(campaign);
+    const latestEventLabel = TRACKER_EVENT_LABELS[campaign.latest_material_event_type] || campaign.latest_material_event_type || "Campaign Update";
+    const saveId = getCampaignRowSaveId(campaign);
+    const summaryLine = [
+        `${campaign.primary_artifact_count || 0} primary`,
+        `${campaign.coverage_count || 0} related`,
+        campaign.confirmation_source !== "none"
+            ? `confirmed by ${(TRACKER_EVIDENCE_LABELS[campaign.confirmation_source] || campaign.confirmation_source).toLowerCase()}`
+            : "awaiting confirmation",
+    ].join(" · ");
+
+    return `
+        <div class="campaign-group-header tracker-group-header${isOpen ? " expanded" : ""}" data-campaign-key="${escapeHtml(campaign.campaign_id)}" role="button" tabindex="0" aria-expanded="${isOpen}" style="--row-color:${activistColor(campaign.canonical_activist)}">
+            <span class="campaign-activist">${escapeHtml(campaign.canonical_activist || "Unknown")}</span>
+            <span class="campaign-summary row-summary-with-logo">
+                ${renderLogoSlot({ target_company: campaign.canonical_target })}
+                <span class="summary-copy">
+                    <span class="campaign-target">${escapeHtml(campaign.canonical_target || "Unknown")}</span>
+                    <span class="campaign-latest">${escapeHtml(summaryLine)}</span>
+                    ${trackerSummaryChips(campaign)}
+                </span>
+            </span>
+            <span class="campaign-meta">${escapeHtml(latestEventLabel)}</span>
+            <span class="campaign-range">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
+            <span class="campaign-count">${trackerStatusChip(campaign.campaign_status)}</span>
+            <span class="campaign-actions">
+                ${saveId ? renderSaveButton(saveId) : '<span class="campaign-action-placeholder" aria-hidden="true"></span>'}
+                <span class="campaign-toggle" aria-hidden="true">${isOpen ? "−" : "+"}</span>
+            </span>
+        </div>
+        ${isOpen ? `
+            <div class="campaign-group-docs tracker-group-docs">
+                <div class="campaign-docs-shell tracker-docs-shell">
+                    <div class="tracker-detail-top">
+                        <div class="tracker-detail-metrics">
+                            <div class="tracker-metric">
+                                <span class="detail-field-label">First Seen</span>
+                                <span class="detail-field-value">${escapeHtml(formatDate(campaign.first_seen_at))}</span>
+                            </div>
+                            <div class="tracker-metric">
+                                <span class="detail-field-label">Last Updated</span>
+                                <span class="detail-field-value">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
+                            </div>
+                            <div class="tracker-metric">
+                                <span class="detail-field-label">Origin</span>
+                                <span class="detail-field-value">${escapeHtml(TRACKER_EVENT_LABELS[(findCampaignEvent(campaign, campaign.originating_event_id) || {}).event_type] || "Unknown")}</span>
+                            </div>
+                            <div class="tracker-metric">
+                                <span class="detail-field-label">Confirmation</span>
+                                <span class="detail-field-value">${trackerEvidenceChip(campaign.confirmation_source === "none" ? "news" : campaign.confirmation_source)}</span>
+                            </div>
+                        </div>
+                        <div class="tracker-detail-summary">
+                            <div class="tracker-detail-summary-line">
+                                ${trackerStatusChip(campaign.campaign_status)}
+                                ${campaign.provisional ? '<span class="detail-chip tracker-provisional-chip">Provisional</span>' : ""}
+                                ${renderChipSet(campaign.event_tags || [], eventTagLabel, "detail-chip")}
+                                ${renderChipSet((campaign.latest_strategy_tags || campaign.strategy_tags || []).slice(0, 2), strategyTagLabel, "detail-chip")}
+                                ${renderChipSet(campaign.sector_tags || [], sectorTagLabel, "detail-chip")}
+                                ${renderChipSet(campaign.quality_tags || [], qualityTagLabel, "detail-chip")}
+                            </div>
+                            <div class="tracker-detail-copy">
+                                One campaign row, primary evidence first, related coverage attached underneath the relevant event or campaign bucket.
+                            </div>
+                        </div>
+                    </div>
+                    ${hasDetails
+                        ? `
+                            ${buildTrackerTimeline(campaign)}
+                            ${buildTrackerCoverageBucket("Campaign-Level Coverage", campaign.coverage_artifacts || [], { secondary: true, bucketLabel: "Campaign coverage", campaign })}
+                            ${buildTrackerCoverageBucket("Low-Trust Attachments", campaign.low_trust_artifacts || [], { secondary: true, lowTrust: true, bucketLabel: "Low-trust match", campaign })}
+                        `
+                        : buildTrackerDetailLoading(campaign)}
+                </div>
+            </div>
+        ` : ""}
+    `;
+}
+
+function hydrateTrackerRow(shell) {
+    if (shell.dataset.hydrated === "1") return;
+    const campaign = trackerCampaignsById.get(shell.dataset.campaignId);
+    if (!campaign) return;
+    shell.innerHTML = buildTrackerRowMarkup(campaign);
+    shell.dataset.hydrated = "1";
+    shell.style.minHeight = "";
+    syncSaveButtons();
+}
+
+function dehydrateTrackerRow(shell) {
+    if (shell.dataset.hydrated !== "1") return;
+    if (expandedCampaigns.has(shell.dataset.campaignId)) return;
+    const h = shell.offsetHeight || TRACKER_ROW_HEIGHT;
+    shell.style.minHeight = h + "px";
+    shell.innerHTML = "";
+    shell.dataset.hydrated = "0";
+}
+
 function renderTracker() {
+    const container = document.getElementById("list-container");
     if (!trackerLoaded) {
+        // Tracker is still being fetched in the background. Show a quiet loading line
+        // instead of the "no results" empty state that misleads users on first paint.
         ensureTrackerData(true);
         updateStats([]);
-        document.getElementById("list-container").innerHTML = '<div class="empty-state">Loading campaign tracker…</div>';
+        container.innerHTML = '<div class="empty-state"><span class="empty-state-headline">Loading campaigns…</span></div>';
         return;
     }
 
     const campaigns = getFilteredTrackerCampaigns();
-    const container = document.getElementById("list-container");
     updateStats(campaigns);
 
+    if (trackerObserver) { trackerObserver.disconnect(); trackerObserver = null; }
+
     if (!campaigns.length) {
-        container.innerHTML = '<div class="empty-state">No campaigns match your tracker filters.</div>';
+        container.innerHTML = buildEmptyStateHtml("No campaigns match your tracker filters.");
+        trackerCampaignsById.clear();
         return;
     }
 
-    container.innerHTML = buildTrackerHeader() + campaigns.map(campaign => {
-        const isOpen = expandedCampaigns.has(campaign.campaign_id);
-        const hasDetails = trackerCampaignHasDetails(campaign);
-        const latestEventLabel = TRACKER_EVENT_LABELS[campaign.latest_material_event_type] || campaign.latest_material_event_type || "Campaign Update";
-        const saveId = getCampaignRowSaveId(campaign);
-        const summaryLine = [
-            `${campaign.primary_artifact_count || 0} primary`,
-            `${campaign.coverage_count || 0} related`,
-            campaign.confirmation_source !== "none"
-                ? `confirmed by ${(TRACKER_EVIDENCE_LABELS[campaign.confirmation_source] || campaign.confirmation_source).toLowerCase()}`
-                : "awaiting confirmation",
-        ].join(" · ");
+    trackerCampaignsById.clear();
+    for (const c of campaigns) trackerCampaignsById.set(c.campaign_id, c);
 
-        return `
-            <div class="campaign-entry tracker-entry">
-                <div class="campaign-group-header tracker-group-header${isOpen ? " expanded" : ""}" data-campaign-key="${escapeHtml(campaign.campaign_id)}" role="button" tabindex="0" aria-expanded="${isOpen}" style="--row-color:${activistColor(campaign.canonical_activist)}">
-                    <span class="campaign-activist">${escapeHtml(campaign.canonical_activist || "Unknown")}</span>
-                    <span class="campaign-summary row-summary-with-logo">
-                        ${renderLogoSlot({ target_company: campaign.canonical_target })}
-                        <span class="summary-copy">
-                            <span class="campaign-target">${escapeHtml(campaign.canonical_target || "Unknown")}</span>
-                            <span class="campaign-latest">${escapeHtml(summaryLine)}</span>
-                            ${trackerSummaryChips(campaign)}
-                        </span>
-                    </span>
-                    <span class="campaign-meta">${escapeHtml(latestEventLabel)}</span>
-                    <span class="campaign-range">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
-                    <span class="campaign-count">${trackerStatusChip(campaign.campaign_status)}</span>
-                    <span class="campaign-actions">
-                        ${saveId ? renderSaveButton(saveId) : '<span class="campaign-action-placeholder" aria-hidden="true"></span>'}
-                        <span class="campaign-toggle" aria-hidden="true">${isOpen ? "−" : "+"}</span>
-                    </span>
-                </div>
-                ${isOpen ? `
-                    <div class="campaign-group-docs tracker-group-docs">
-                        <div class="campaign-docs-shell tracker-docs-shell">
-                            <div class="tracker-detail-top">
-                                <div class="tracker-detail-metrics">
-                                    <div class="tracker-metric">
-                                        <span class="detail-field-label">First Seen</span>
-                                        <span class="detail-field-value">${escapeHtml(formatDate(campaign.first_seen_at))}</span>
-                                    </div>
-                                    <div class="tracker-metric">
-                                        <span class="detail-field-label">Last Updated</span>
-                                        <span class="detail-field-value">${escapeHtml(formatDate(campaign.last_updated_at))}</span>
-                                    </div>
-                                    <div class="tracker-metric">
-                                        <span class="detail-field-label">Origin</span>
-                                        <span class="detail-field-value">${escapeHtml(TRACKER_EVENT_LABELS[(findCampaignEvent(campaign, campaign.originating_event_id) || {}).event_type] || "Unknown")}</span>
-                                    </div>
-                                    <div class="tracker-metric">
-                                        <span class="detail-field-label">Confirmation</span>
-                                        <span class="detail-field-value">${trackerEvidenceChip(campaign.confirmation_source === "none" ? "news" : campaign.confirmation_source)}</span>
-                                    </div>
-                                </div>
-                                <div class="tracker-detail-summary">
-                                    <div class="tracker-detail-summary-line">
-                                        ${trackerStatusChip(campaign.campaign_status)}
-                                        ${campaign.provisional ? '<span class="detail-chip tracker-provisional-chip">Provisional</span>' : ""}
-                                        ${renderChipSet(campaign.event_tags || [], eventTagLabel, "detail-chip")}
-                                        ${renderChipSet((campaign.latest_strategy_tags || campaign.strategy_tags || []).slice(0, 2), strategyTagLabel, "detail-chip")}
-                                        ${renderChipSet(campaign.sector_tags || [], sectorTagLabel, "detail-chip")}
-                                        ${renderChipSet(campaign.quality_tags || [], qualityTagLabel, "detail-chip")}
-                                    </div>
-                                    <div class="tracker-detail-copy">
-                                        One campaign row, primary evidence first, related coverage attached underneath the relevant event or campaign bucket.
-                                    </div>
-                                </div>
-                            </div>
-                            ${hasDetails
-                                ? `
-                                    ${buildTrackerTimeline(campaign)}
-                                    ${buildTrackerCoverageBucket("Campaign-Level Coverage", campaign.coverage_artifacts || [], { secondary: true, bucketLabel: "Campaign coverage", campaign })}
-                                    ${buildTrackerCoverageBucket("Low-Trust Attachments", campaign.low_trust_artifacts || [], { secondary: true, lowTrust: true, bucketLabel: "Low-trust match", campaign })}
-                                `
-                                : buildTrackerDetailLoading(campaign)}
-                        </div>
-                    </div>
-                ` : ""}
-            </div>
-        `;
-    }).join("");
+    const placeholders = campaigns.map(c =>
+        `<div class="campaign-entry tracker-entry" data-campaign-id="${escapeHtml(c.campaign_id)}" data-hydrated="0" style="min-height:${TRACKER_ROW_HEIGHT}px"></div>`
+    ).join("");
+
+    container.innerHTML = buildTrackerHeader() + placeholders;
+
+    trackerObserver = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+            if (entry.isIntersecting) hydrateTrackerRow(entry.target);
+            else dehydrateTrackerRow(entry.target);
+        }
+    }, { rootMargin: TRACKER_HYDRATE_MARGIN });
+    container.querySelectorAll(".tracker-entry").forEach(el => trackerObserver.observe(el));
 }
 
 function render() {
@@ -3168,6 +3449,10 @@ document.getElementById("rl-download-btn").addEventListener("click", async () =>
 
             if (d.blob_url) {
                 // Blob URLs are public and CORS-friendly, so deployed ZIPs can fetch them directly.
+                // Falls back to the proxy w/ original_url if the blob is unreachable
+                // (e.g. blob store blocked, deleted, or 403). Without this fallback, a
+                // blocked blob store killed every PDF download even though the source
+                // SEC/news URL was still valid.
                 try {
                     const resp = await fetch(d.blob_url);
                     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -3176,8 +3461,25 @@ document.getElementById("rl-download-btn").addEventListener("click", async () =>
                     const filename = d.pdf_filename || `${safeName}.pdf`;
                     zip.file(filename, blob);
                     manifestLines.push(`${label}\nFile: ${filename}\nStatus: downloaded (Blob)\nSource: ${d.blob_url}\n`);
-                } catch (err) {
-                    manifestLines.push(`${label}\nLink: ${d.blob_url}\nStatus: failed (${err.message})\n`);
+                } catch (blobErr) {
+                    if (!d.original_url) {
+                        manifestLines.push(`${label}\nLink: ${d.blob_url}\nStatus: failed (${blobErr.message})\n`);
+                    } else {
+                        try {
+                            const proxyUrl = `/api/fetch-pdf?url=${encodeURIComponent(d.original_url)}`;
+                            const resp = await fetch(proxyUrl);
+                            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                            const contentType = resp.headers.get("content-type") || "";
+                            const blob = await resp.blob();
+                            const isPdf = contentType.includes("pdf");
+                            const safeName = (d.title || d.id || "document").replace(/[^a-zA-Z0-9_\- ]/g, "").substring(0, 80);
+                            const filename = d.pdf_filename || `${safeName}${isPdf ? ".pdf" : ".html"}`;
+                            zip.file(filename, blob);
+                            manifestLines.push(`${label}\nFile: ${filename}\nStatus: downloaded (proxy fallback after blob ${blobErr.message})\nSource: ${d.original_url}\n`);
+                        } catch (proxyErr) {
+                            manifestLines.push(`${label}\nLink: ${d.original_url}\nStatus: failed (blob: ${blobErr.message}, proxy: ${proxyErr.message})\n`);
+                        }
+                    }
                 }
             } else if (!DEPLOY_MODE && d.pdf_filename) {
                 // Local mode: fetch from local PDF cache

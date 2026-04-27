@@ -4,10 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="origin">
+    <meta name="description" content="Activist investor filings, presentations, and campaign moves from SEC EDGAR, fund websites, and the press — in one searchable, filterable feed.">
     <title>Activist Aggregator</title>
-    <link rel="stylesheet" href="style.css?v=18">
+    <link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
+    <a class="skip-link" href="#list-container">Skip to results</a>
     <header class="site-header">
         <div class="masthead">
             <div class="masthead-inner">
@@ -16,31 +18,25 @@
                         <img class="brand-mark-image" src="assets/knight-logo.png" alt="">
                     </span>
                     <div class="brand-copy">
-                        <span class="brand-name">Activist Aggregator</span>
+                        <h1 class="brand-name">Activist Aggregator</h1>
                     </div>
                 </div>
-                <div class="masthead-note">Tracker · Filings · Presentations · Shorts</div>
-            </div>
-        </div>
-        <div class="header-inner">
-            <div class="header-copy">
-                <p class="eyebrow">Primary filings, decks, and campaign moves in one screen.</p>
-            </div>
-            <div class="header-actions">
-                <div class="header-stats" id="header-stats"></div>
-                <button id="reading-list-toggle" class="header-btn" title="Reading List (r)" aria-label="Open reading list">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M3 2h10a1 1 0 011 1v11l-6-3-6 3V3a1 1 0 011-1z"/>
-                    </svg>
-                    <span>Reading List</span>
-                    <span class="rl-badge" id="rl-badge" style="display:none">0</span>
-                </button>
+                <div class="header-actions">
+                    <div class="header-stats" id="header-stats"></div>
+                    <button id="reading-list-toggle" class="header-btn" title="Reading List (r)" aria-label="Open reading list">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M3 2h10a1 1 0 011 1v11l-6-3-6 3V3a1 1 0 011-1z"/>
+                        </svg>
+                        <span>Reading List</span>
+                        <span class="rl-badge" id="rl-badge" style="display:none">0</span>
+                    </button>
+                </div>
             </div>
         </div>
     </header>
 
     <main class="shell">
-        <div class="tab-bar" role="tablist" aria-label="Content sections">
+        <nav class="tab-bar" role="tablist" aria-label="Content sections">
             <button id="tab-presentations" class="tab-btn active" data-tab="presentations" type="button" role="tab" aria-selected="true" aria-controls="list-container" tabindex="0">
                 <span class="tab-label">Presentations</span>
                 <span class="tab-count" id="tab-count-presentations"></span>
@@ -64,11 +60,11 @@
             <button id="tab-guide" class="tab-btn" data-tab="guide" type="button" role="tab" aria-selected="false" aria-controls="list-container" tabindex="-1">
                 <span class="tab-label">Guide</span>
             </button>
-        </div>
+        </nav>
 
-        <section class="control-panel">
+        <section class="control-panel" aria-label="Search and filters">
             <div class="toolbar toolbar-primary">
-                <div class="search-wrap">
+                <div class="search-wrap" role="search">
                     <label class="sr-only" for="search-input">Search reports</label>
                     <input type="text" id="search-input" placeholder="Search activist, target, title, or filing...">
                     <button id="semantic-toggle" class="search-mode-btn" type="button" title="Toggle semantic search (press Enter to search)">Semantic</button>
@@ -90,8 +86,8 @@
                         <button class="view-btn signal-tier-btn" data-tier="all" type="button">All</button>
                     </div>
                     <div class="view-group" aria-label="View mode">
-                        <button id="view-list" class="view-btn active" type="button" aria-pressed="true">List</button>
-                        <button id="view-campaigns" class="view-btn" type="button" aria-pressed="false">Campaigns</button>
+                        <button id="view-list" class="view-btn active" type="button" aria-pressed="true" title="Show one row per filing">List</button>
+                        <button id="view-campaigns" class="view-btn" type="button" aria-pressed="false" title="Group filings by activist + target into campaigns">Campaigns</button>
                     </div>
                     <button id="toggle-filters" class="toolbar-btn" type="button" aria-expanded="false" aria-controls="filter-panel">Filters</button>
                 </div>
@@ -157,8 +153,8 @@
             </div>
         </section>
 
-        <div class="stats-bar" id="stats-bar"></div>
-        <div class="list-container" id="list-container" role="tabpanel" tabindex="-1"></div>
+        <div class="stats-bar" id="stats-bar" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="list-container" id="list-container" role="tabpanel" tabindex="-1" aria-label="Search results"></div>
     </main>
 
     <aside class="reading-list-sidebar" id="reading-list-sidebar" aria-label="Reading list">
@@ -191,6 +187,6 @@
     <div class="rl-overlay" id="rl-overlay"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="app.js?v=19"></script>
+    <script src="app.js?v=23"></script>
 </body>
 </html>
