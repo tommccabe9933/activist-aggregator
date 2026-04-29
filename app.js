@@ -902,7 +902,33 @@ function getLogoUrl(d) {
     return `https://img.logo.dev/name/${encodeURIComponent(lookup)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`;
 }
 
+// Some short / ambiguous company names collide with unrelated firms in
+// logo.dev's name index ("Snap" returned Snap-on Tools instead of Snap Inc).
+// When we know the ticker, use logo.dev's /ticker/ endpoint which is
+// unambiguous. Add new mappings here when a wrong logo shows up on the
+// tracker for a known company.
+const LOGO_TICKER_OVERRIDES = {
+    "snap": "SNAP",
+    "snap inc": "SNAP",
+    "snap, inc.": "SNAP",
+    "snapchat": "SNAP",
+    "americold": "COLD",
+    "americold realty": "COLD",
+    "americold realty trust": "COLD",
+    "umg": "UMGP",
+    "lamb weston": "LW",
+    "carmax": "KMX",
+    "norwegian cruise line": "NCLH",
+    "tegna": "TGNA",
+    "synopsys": "SNPS",
+};
+
 function logoDevUrl(name) {
+    const key = (name || "").trim().toLowerCase();
+    const ticker = LOGO_TICKER_OVERRIDES[key];
+    if (ticker) {
+        return `https://img.logo.dev/ticker/${encodeURIComponent(ticker)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`;
+    }
     return `https://img.logo.dev/name/${encodeURIComponent(name)}?token=${encodeURIComponent(LOGO_DEV_PUBLIC_KEY)}&size=40&retina=true&format=png&theme=auto&fallback=404`;
 }
 
