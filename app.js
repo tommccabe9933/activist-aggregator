@@ -3050,6 +3050,12 @@ function buildTrackerDetailLoading(campaign) {
     if (campaign.detail_error) {
         return '<div class="tracker-empty-timeline">Campaign detail could not be loaded. Try reopening the row.</div>';
     }
+    // No detail_path means the publish step didn't write a per-campaign
+    // detail file (typically provisional campaigns with only news
+    // coverage and no events). Don't spin forever — show what we have.
+    if (!campaign.detail_path) {
+        return '<div class="tracker-empty-timeline">No extended timeline yet. Coverage articles attach below as they arrive.</div>';
+    }
     return '<div class="tracker-empty-timeline">Loading campaign timeline and supporting artifacts…</div>';
 }
 
