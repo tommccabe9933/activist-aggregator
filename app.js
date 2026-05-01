@@ -1332,7 +1332,16 @@ async function loadData() {
         .then(json => { if (json) logoManifest = json; });
 
     try {
-        const activistData = await fetchJsonFile("data.json");
+        // Prefer the slim data_index.json (~6-8 MB, every record with
+        // frontend-relevant fields only) over the full data.json (~32 MB,
+        // every record with all scraper fields). 5x smaller download +
+        // parse, no functionality loss for the rendered UI.
+        let activistData = await fetchJsonFile("data_index.json");
+        if (!activistData || (Array.isArray(activistData) && activistData.length < 1000)) {
+            // Fallback: data_index missing or stale (only ~2k records from
+            // pre-fix builds). Pull the full file.
+            activistData = await fetchJsonFile("data.json");
+        }
         const shortsData = await fetchJsonFile("shorts/shorts.json");
         await logoManifestPromise; // Settle before first render so initial logos use static paths.
         if (!activistData && !shortsData) {
