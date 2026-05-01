@@ -2702,3 +2702,54 @@ a:hover {
 .campaign-entry {
     animation: row-enter 220ms ease-out both;
 }
+
+/* Tracker row summary chips — quality at a glance.
+   Previously the .summary-chip class existed in JS but had no CSS, so
+   nothing rendered. Minimal styling so deck/filing/hunting badges
+   show up next to each row. */
+.summary-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: 8px;
+    align-items: center;
+    vertical-align: middle;
+}
+.summary-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: #334155;
+    border: 1px solid #e2e8f0;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.summary-chip-deck {
+    background: #ecfdf5;
+    color: #047857;
+    border-color: #a7f3d0;
+}
+.summary-chip-filing {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+}
+.summary-chip-hunt {
+    background: #fef3c7;
+    color: #92400e;
+    border-color: #fcd34d;
+}
+.summary-chip-sector {
+    background: #faf5ff;
+    color: #6b21a8;
+    border-color: #e9d5ff;
+}
+.summary-chip-quality {
+    background: #fff7ed;
+    color: #9a3412;
+    border-color: #fed7aa;
+}

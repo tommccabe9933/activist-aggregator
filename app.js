@@ -1724,6 +1724,7 @@ function syncToolbarState() {
     const filingScope = document.getElementById("filing-scope-filter");
     const filerRole = document.getElementById("filer-role-filter");
     const campaignStatus = document.getElementById("campaign-status-filter");
+    const docQuality = document.getElementById("doc-quality-filter");
     const eventTag = document.getElementById("event-tag-filter");
     const strategyTag = document.getElementById("strategy-tag-filter");
     const qualityTag = document.getElementById("quality-tag-filter");
@@ -1740,6 +1741,7 @@ function syncToolbarState() {
     filingScope.style.display = activeTab === "filings" ? "" : "none";
     filerRole.style.display = activeTab === "filings" ? "" : "none";
     campaignStatus.style.display = trackerMode ? "" : "none";
+    if (docQuality) docQuality.style.display = trackerMode ? "" : "none";
     eventTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
     strategyTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
     qualityTag.style.display = activeTab === "filings" || trackerMode ? "" : "none";
@@ -2059,6 +2061,7 @@ function getFilteredTrackerCampaigns() {
     const type = document.getElementById("type-filter").value;
     const sector = document.getElementById("sector-filter").value;
     const campaignStatus = document.getElementById("campaign-status-filter").value;
+    const docQuality = (document.getElementById("doc-quality-filter") || {}).value || "";
     const eventTag = document.getElementById("event-tag-filter").value;
     const strategyTags = getSelectedValues("strategy-tag-filter");
     const qualityTag = document.getElementById("quality-tag-filter").value;
@@ -2069,6 +2072,14 @@ function getFilteredTrackerCampaigns() {
     const filtered = (trackerData.campaigns || []).filter(campaign => {
         if (activist && campaign.canonical_activist !== activist) return false;
         if (campaignStatus && campaign.campaign_status !== campaignStatus) return false;
+        // Document-quality filter: show only campaigns that have a real
+        // primary doc (deck/letter), an SEC filing, either, or — the
+        // inverse — campaigns where a deck is signaled but missing
+        // (so the user can prioritize hunting for them).
+        if (docQuality === "has_deck" && !campaign.has_letter_or_deck) return false;
+        if (docQuality === "has_filing" && !campaign.has_filing) return false;
+        if (docQuality === "has_either" && !(campaign.has_letter_or_deck || campaign.has_filing)) return false;
+        if (docQuality === "missing_deck" && (campaign.has_letter_or_deck || campaign.doc_hunt_priority !== "high")) return false;
         if (!passesRecency(campaign.last_updated_at, recency)) return false;
         if (eventTag && !(campaign.event_tags || []).includes(eventTag)) return false;
         if (!hasRequiredTags(campaign.strategy_tags || [], strategyTags)) return false;
@@ -2314,6 +2325,13 @@ function filingSummaryChips(d) {
 
 function trackerSummaryChips(campaign) {
     const tags = [];
+    // Document-availability chips first — most useful info on a row.
+    // Activist deck/letter is the high-value primary doc; SEC filing
+    // confirms the campaign exists; doc_hunt_priority="high" flags
+    // campaigns where a deck is signaled by the headline but missing.
+    if (campaign.has_letter_or_deck) tags.push(`<span class="summary-chip summary-chip-deck" title="Activist letter or deck attached">📄 Deck</span>`);
+    if (campaign.has_filing) tags.push(`<span class="summary-chip summary-chip-filing" title="SEC filing attached">⚖️ Filing</span>`);
+    if (campaign.doc_hunt_priority === "high" && !campaign.has_letter_or_deck) tags.push(`<span class="summary-chip summary-chip-hunt" title="Headline signals a deck exists but we haven't found it yet">🔍 Hunting</span>`);
     if (campaign.latest_event_tag) tags.push(`<span class="summary-chip">${escapeHtml(eventTagLabel(campaign.latest_event_tag))}</span>`);
     if (campaign.latest_strategy_tags && campaign.latest_strategy_tags[0]) tags.push(`<span class="summary-chip">${escapeHtml(strategyTagLabel(campaign.latest_strategy_tags[0]))}</span>`);
     if (campaign.sector_tags && campaign.sector_tags[0]) tags.push(`<span class="summary-chip summary-chip-sector">${escapeHtml(sectorTagLabel(campaign.sector_tags[0]))}</span>`);
@@ -3361,6 +3379,10 @@ document.getElementById("sector-filter").addEventListener("change", render);
 document.getElementById("filing-scope-filter").addEventListener("change", render);
 document.getElementById("filer-role-filter").addEventListener("change", render);
 document.getElementById("campaign-status-filter").addEventListener("change", render);
+{
+    const _docQ = document.getElementById("doc-quality-filter");
+    if (_docQ) _docQ.addEventListener("change", render);
+}
 document.getElementById("event-tag-filter").addEventListener("change", render);
 document.getElementById("strategy-tag-filter").addEventListener("change", render);
 document.getElementById("quality-tag-filter").addEventListener("change", render);

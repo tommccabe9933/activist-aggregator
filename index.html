@@ -131,6 +131,14 @@
                     <select id="campaign-status-filter" aria-label="Filter tracker by campaign status" style="display:none">
                         <option value="">All Campaign Statuses</option>
                     </select>
+                    <label class="sr-only" for="doc-quality-filter">Filter tracker by document quality</label>
+                    <select id="doc-quality-filter" aria-label="Filter tracker by document quality" style="display:none">
+                        <option value="">Any Documents</option>
+                        <option value="has_deck">Has activist deck or letter</option>
+                        <option value="has_filing">Has SEC filing</option>
+                        <option value="has_either">Has any primary doc</option>
+                        <option value="missing_deck">Missing deck (hunt for it)</option>
+                    </select>
                     <label class="sr-only" for="event-tag-filter">Filter by event tag</label>
                     <select id="event-tag-filter" aria-label="Filter by event tag" style="display:none">
                         <option value="">All Event Tags</option>
